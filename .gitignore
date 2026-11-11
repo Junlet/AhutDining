@@ -1,0 +1,24 @@
+# 运行期数据与缓存（不纳入版本库）
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# 用户上传的图片（保留目录，内容不入库）
+media/**
+!media/.gitkeep
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
