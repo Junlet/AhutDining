@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>安工大校园用餐推荐</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">A</div>
+    <div>
+      <h1>安工大校园用餐推荐</h1>
+      <p class="sub">安徽工业大学 · 依据《中国居民膳食指南(2022)》</p>
+    </div>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="home">推荐</button>
+    <button class="tab" data-tab="search">搜索</button>
+    <button class="tab" data-tab="custom">自选评估</button>
+    <button class="tab" data-tab="records">用餐记录</button>
+    <button class="tab" data-tab="favorites">收藏</button>
+    <button class="tab" data-tab="settings">设置</button>
+  </nav>
+</header>
+
+<div class="todaybar" id="todaybar"></div>
+
+<main>
+  <!-- 首页推荐 -->
+  <section class="panel active" id="panel-home">
+    <div class="row between center wrap">
+      <div>
+        <h2>今天吃点什么</h2>
+        <p class="muted" id="home-slot">正在判断当前用餐时段…</p>
+      </div>
+      <div class="row gap">
+        <select id="home-slot-select" class="select" title="切换餐次"></select>
+        <button class="btn primary" id="btn-refresh">换一批推荐</button>
+      </div>
+    </div>
+    <div class="targets" id="home-targets"></div>
+    <div class="cards" id="plan-list"></div>
+  </section>
+
+  <!-- 搜索 -->
+  <section class="panel" id="panel-search">
+    <h2>搜索菜品</h2>
+    <div class="filters">
+      <input id="search-q" class="input grow" placeholder="搜索菜名或标签，例如：牛肉、清淡、辣" />
+      <select id="search-canteen" class="select"></select>
+      <select id="search-category" class="select"></select>
+      <select id="search-sort" class="select">
+        <option value="score">按营养分排序</option>
+        <option value="price">按价格从低到高</option>
+        <option value="protein">按蛋白质从高到低</option>
+        <option value="kcal">按热量从低到高</option>
+      </select>
+      <button class="btn" id="btn-search">搜索</button>
+    </div>
+    <p class="muted" id="search-hint"></p>
+    <div class="cards" id="search-list"></div>
+  </section>
+
+  <!-- 自选评估 -->
+  <section class="panel" id="panel-custom">
+    <h2>自己搭配一餐，看看推荐度</h2>
+    <p class="muted">适合麻辣烫、称重快餐这类自助菜品：勾选你实际取的东西，系统按指南给出推荐度与改进建议。</p>
+    <div class="filters">
+      <input id="custom-q" class="input grow" placeholder="搜索要加入的菜品" />
+      <select id="custom-slot" class="select">
+        <option value="lunch">按午餐目标评估</option>
+        <option value="breakfast">按早餐目标评估</option>
+        <option value="dinner">按晚餐目标评估</option>
+        <option value="snack">按加餐目标评估</option>
+      </select>
+      <button class="btn primary" id="btn-evaluate">计算推荐度</button>
+    </div>
+    <div class="split">
+      <div>
+        <h3>可选菜品</h3>
+        <div class="pick-list" id="custom-pick"></div>
+      </div>
+      <div>
+        <h3>已选 <span id="custom-count">0</span> 项</h3>
+        <div class="chosen" id="custom-chosen"></div>
+        <div id="custom-result"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 用餐记录 -->
+  <section class="panel" id="panel-records">
+    <div class="row between center wrap">
+      <h2>用餐记录</h2>
+      <div class="row gap">
+        <input type="date" id="record-date" class="input" />
+        <button class="btn" id="btn-record-today">回到今天</button>
+      </div>
+    </div>
+    <p class="muted">推荐被确认后会自动记在这里；忘了确认也没关系，事后可以手动补记。</p>
+    <div class="records" id="record-list"></div>
+    <div class="summary" id="record-summary"></div>
+  </section>
+
+  <!-- 收藏 -->
+  <section class="panel" id="panel-favorites">
+    <h2>我的收藏</h2>
+    <div class="cards" id="favorite-list"></div>
+  </section>
+
+  <!-- 设置 -->
+  <section class="panel" id="panel-settings">
+    <h2>个人资料与偏好</h2>
+    <div class="split">
+      <form class="form-card" id="profile-form">
+        <h3>基本信息</h3>
+        <label>昵称<input name="nickname" class="input" /></label>
+        <label>性别
+          <select name="gender" class="select">
+            <option value="male">男</option>
+            <option value="female">女</option>
+          </select>
+        </label>
+        <label>出生日期<input name="birth_date" type="date" class="input" /></label>
+        <label>身高（cm）<input name="height_cm" type="number" step="0.5" class="input" /></label>
+        <label>体重（kg）<input name="weight_kg" type="number" step="0.5" class="input" /></label>
+        <label>目标
+          <select name="goal" class="select">
+            <option value="balanced">保持体重</option>
+            <option value="lose">减脂</option>
+            <option value="gain">增肌</option>
+          </select>
+        </label>
+        <h3>活动系数</h3>
+        <div class="radio-group" id="activity-group"></div>
+        <h3>每天吃几餐</h3>
+        <div class="radio-group" id="meals-group"></div>
+        <label>忌口 / 过敏（逗号分隔，仅作提示）<input name="allergies" class="input" /></label>
+        <div class="row gap">
+          <button type="submit" class="btn primary">保存资料</button>
+          <span class="muted" id="profile-msg"></span>
+        </div>
+      </form>
+      <div class="form-card">
+        <h3>根据你的资料算出来的目标</h3>
+        <div id="metrics-box"></div>
+        <h3>推荐刷新时间点</h3>
+        <div id="slot-settings"></div>
+        <p class="muted">时间点用于判断"现在是哪一餐"，到达新时点时首页会自动刷新推荐（无需手动点）。</p>
+        <button class="btn" id="btn-save-slots">保存时间点</button>
+        <span class="muted" id="slot-msg"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- 菜品详情 -->
+<div class="modal" id="modal">
+  <div class="modal-box">
+    <button class="modal-close" id="modal-close">×</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
