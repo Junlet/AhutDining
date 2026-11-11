@@ -306,6 +306,10 @@ def _dedupe_key(combo: list[dict]) -> tuple:
     return tuple(sorted(i["id"] for i in combo))
 
 
+def _dedupe_key_plan(plan: dict) -> tuple:
+    return tuple(sorted(i["dish_id"] for i in plan["items"]))
+
+
 def build_plans(slot: str, date: str, batch_no: int, count: int = 6) -> list[dict]:
     """枚举并打分，返回若干套推荐套餐（已按分数排序、跨食堂去重）。"""
     profile = db.query_one("SELECT * FROM profiles WHERE user_id = 1") or {}
@@ -363,9 +367,8 @@ def build_plans(slot: str, date: str, batch_no: int, count: int = 6) -> list[dic
             used = {i["id"] for i in combo}
             extras = [d for d in pool_all if d["id"] not in used]
             if slot in ("lunch", "dinner"):
-                # 补菜只补菜/汤，不再补第二份主食
-                extras = [d for d in extras if not d["is_staple"]
-                          and d["category"] not in ("主食", "套餐", "早餐")]
+                # 补菜只补素菜或汤，不再补第二份主食/饮料
+                extras = [d for d in extras if d["category"] in ("素菜", "汤")]
             elif slot == "snack":
                 extras = [d for d in extras if d["category"] in ("水果", "饮品", "小吃")]
             else:  # 早餐：可以配饮品/水果/小吃/小份主食，但不再叠一份大主食
@@ -387,24 +390,62 @@ def build_plans(slot: str, date: str, batch_no: int, count: int = 6) -> list[dic
 
     candidates.sort(key=lambda c: c["scores"]["total"], reverse=True)
 
-    # 跨食堂轮转取前 N，避免全是同一食堂
-    picked: list[dict] = []
-    seen_canteens: list[int] = []
+    # 刷新要能真的换内容：在"分数最高的若干套"里按批次做加权随机抽样，
+    # 同时优先覆盖不同食堂，避免每次刷新都是同一批。
+    # 候选池：全局前列 + 每个食堂自己的前列，保证既有最优也有跨食堂的选择
+    per_canteen: dict[int, list[dict]] = {}
     for cand in candidates:
-        cid = cand["canteen"]["id"]
-        if cid in seen_canteens and len(picked) < count:
+        per_canteen.setdefault(cand["canteen"]["id"], []).append(cand)
+    pool: list[dict] = list(candidates[: max(8, count)])
+    for lst in per_canteen.values():
+        pool.extend(lst[: max(3, count // 2)])
+    seen_pool: set[tuple] = set()
+    uniq: list[dict] = []
+    for cand in pool:
+        key = _dedupe_key_plan(cand)
+        if key in seen_pool:
             continue
-        picked.append(cand)
-        seen_canteens.append(cid)
-        if len(picked) >= count:
-            break
-    if len(picked) < count:
-        for cand in candidates:
-            if cand in picked:
-                continue
-            picked.append(cand)
-            if len(picked) >= count:
-                break
+        seen_pool.add(key)
+        uniq.append(cand)
+    pool = uniq
+
+    picked: list[dict] = []
+    used_keys: set[tuple] = set()
+    used_canteens: set[int] = set()
+
+    def _pick(candidates_pool: list[dict], ignore_canteen: bool) -> None:
+        items = [c for c in candidates_pool
+                 if _dedupe_key_plan(c) not in used_keys
+                 and (ignore_canteen or c["canteen"]["id"] not in used_canteens)]
+        while items and len(picked) < count:
+            weights = [max(0.02, c["scores"]["total"]) ** 4 for c in items]
+            total = sum(weights)
+            roll = rng.random() * total
+            acc = 0.0
+            chosen = items[-1]
+            for idx, weight in enumerate(weights):
+                acc += weight
+                if acc >= roll:
+                    chosen = items[idx]
+                    break
+            picked.append(chosen)
+            used_keys.add(_dedupe_key_plan(chosen))
+            used_canteens.add(chosen["canteen"]["id"])
+            items = [c for c in items
+                     if c is not chosen
+                     and (ignore_canteen or c["canteen"]["id"] not in used_canteens)]
+
+    # 第一名固定给全局最优，其余按"先跨食堂、再允许重复"的顺序抽取
+    if candidates:
+        picked.append(candidates[0])
+        used_keys.add(_dedupe_key_plan(candidates[0]))
+        used_canteens.add(candidates[0]["canteen"]["id"])
+    _pick(pool, ignore_canteen=False)
+    _pick(pool, ignore_canteen=True)
+    if len(picked) < count:                    # 池子太小则放宽到全部候选
+        _pick(candidates, ignore_canteen=True)
+
+    picked.sort(key=lambda c: c["scores"]["total"], reverse=True)
 
     for idx, plan in enumerate(picked, start=1):
         plan["id"] = f"{date}-{slot}-{batch_no}-{idx}"
