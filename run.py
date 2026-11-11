@@ -18,6 +18,13 @@ APP_DIR = os.path.join(BASE_DIR, "app")
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
+# Windows 控制台默认 GBK，统一改成 UTF-8 并对个别字符兜底，避免中文报错中断启动
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 import server  # noqa: E402
 
 
