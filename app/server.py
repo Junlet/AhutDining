@@ -80,6 +80,13 @@ def meal_slots(date: str) -> list[dict]:
                 (date, idx),
             )
         record = dict(record)
+        # 餐数/拆分改过之后，旧行的 meal_name 可能过期（例如 3 餐的「晚餐」在 4 餐里应是「加餐」）
+        if record.get("meal_name") != meal["name"]:
+            db.execute(
+                "UPDATE meal_records SET meal_name = ? WHERE user_id = 1 AND date = ? AND meal_index = ?",
+                (meal["name"], date, idx),
+            )
+            record["meal_name"] = meal["name"]
         record["items"] = json.loads(record.pop("items_json") or "[]")
         record["target"] = {
             "kcal": meal["kcal"], "protein": meal["protein"],

@@ -354,8 +354,17 @@ function renderDayPlan(data) {
   document.getElementById('day-hint').textContent =
     `现在是 ${data.now}，今天共 ${s.meals_total} 餐：已记录 ${s.meals_recorded} 餐、` +
     `还剩 ${s.meals_remaining} 餐待安排` +
-    (s.meals_missed ? `、已错过 ${s.meals_missed} 餐（勾选「包含已过时段」可补排）` : '') +
+    (s.meals_missed ? `、已错过 ${s.meals_missed} 餐` : '') +
     '。固定某一餐后，刷新只更换其它餐次。';
+  if (data.suggest_include_passed) {
+    const hint = document.getElementById('day-hint');
+    const cta = el('<button class="btn small primary" style="margin-left:8px">把已过时段也安排上</button>');
+    cta.addEventListener('click', () => {
+      document.getElementById('day-include-passed').checked = true;
+      loadDayPlan();
+    });
+    hint.appendChild(cta);
+  }
 
   const pinnedCount = data.meals.filter((m) => m.pinned).length;
   document.getElementById('day-summary').innerHTML = `

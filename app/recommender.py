@@ -288,20 +288,36 @@ def _top(items: list[dict], categories: Iterable[str], k: int = ROLE_TOP_K) -> l
     return pool[:k]
 
 
-def _extend(items: list[dict], pool: list[dict], target: dict, limit: int = 8) -> list[dict]:
-    """热量不够时贪心补一道菜（汤/小份荤/素），只在能提高总分时采纳。"""
-    if _bundle(items)["kcal"] >= float(target["kcal"]) * 0.88:
+def _extend(items: list[dict], pool: list[dict], target: dict,
+            limit: int = 8, max_items: int = 6) -> list[dict]:
+    """热量不够时反复贪心补菜，直到接近目标或再加也没有提升。
+
+    单餐目标很大时（例如一天只吃两餐，每餐要扛半天）允许补到 6 样，
+    否则一份"主食+荤+素"最多 900 kcal 左右，永远够不着目标。
+    """
+    target_kcal = float(target["kcal"])
+    if _bundle(items)["kcal"] >= target_kcal * 0.88:
         return items
-    best, best_score = None, score_bundle(items, target)["scores"]["total"]
+
     chosen = {i["id"] for i in items}
-    for cand in pool[:limit]:
-        if cand["id"] in chosen:
-            continue
-        trial = items + [cand]
-        score = score_bundle(trial, target)["scores"]["total"]
-        if score > best_score + 1e-6:
-            best, best_score = trial, score
-    return best or items
+    best_score = score_bundle(items, target)["scores"]["total"]
+    guard = 0
+    while len(items) < max_items and _bundle(items)["kcal"] < target_kcal * 0.92 and guard < 10:
+        guard += 1
+        best, best_score_new = None, best_score
+        for cand in pool[:limit]:
+            if cand["id"] in chosen:
+                continue
+            trial = items + [cand]
+            score = score_bundle(trial, target)["scores"]["total"]
+            if score > best_score_new + 1e-6:
+                best, best_score_new = trial, score
+        if best is None:
+            break
+        items = best
+        best_score = best_score_new
+        chosen.add(best[-1]["id"])
+    return items
 
 
 def _dedupe_key(combo: list[dict]) -> tuple:
@@ -363,9 +379,15 @@ def candidate_plans(slot: str, target: dict, dishes: list[dict]) -> list[dict]:
             seen.add(key)
             used = {i["id"] for i in combo}
             extras = [d for d in pool_all if d["id"] not in used]
+            big_meal = float(target.get("kcal") or 0) >= 1000
             if slot in ("lunch", "dinner"):
-                # 补菜只补素菜或汤，不再补第二份主食/饮料
-                extras = [d for d in extras if d["category"] in ("素菜", "汤")]
+                # 补菜只补素菜或汤；只有"一餐扛半天"的大目标才允许再补一份主食
+                allowed = ("素菜", "汤") + (("主食",) if big_meal else ())
+                extras = [d for d in extras if d["category"] in allowed]
+                if big_meal:
+                    # 最多再补一份主食，避免"三碗米饭"这种不合理的组合
+                    staples_extra = [d for d in extras if d["category"] == "主食"][:1]
+                    extras = staples_extra + [d for d in extras if d["category"] != "主食"]
             elif slot == "snack":
                 extras = [d for d in extras if d["category"] in ("水果", "饮品", "小吃")]
             else:  # 早餐：可以配饮品/水果/小吃/小份主食，但不再叠一份大主食
@@ -775,6 +797,8 @@ def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dic
         "now": _now_hhmm(),
         "seed": seed,
         "include_passed": bool(include_passed),
+        "suggest_include_passed": bool(
+            not remaining and any(m["status"] == "missed" for m in timeline)),
         "signature": signature,
         "daily": daily,
         "consumed": consumed,

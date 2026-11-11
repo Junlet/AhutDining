@@ -1,4 +1,4 @@
-﻿"""接口冒烟测试：不依赖第三方库，直接用 urllib 打本机服务。
+"""接口冒烟测试：不依赖第三方库，直接用 urllib 打本机服务。
 
 用法（服务已启动后）：
     python tests/smoke_test.py            # 默认 http://127.0.0.1:8848
@@ -168,23 +168,27 @@ def test_manual_record_and_clear() -> None:
 
 def test_profile_update() -> None:
     before = call("GET", "/api/profile")
+    before_meals = before["profile"]["meals_per_day"]
     data = call("PUT", "/api/profile", {
         "height_cm": 175, "weight_kg": 68, "gender": "male",
         "activity_level": "moderate", "meals_per_day": 4, "goal": "balanced",
     })
     assert data["metrics"]["meals_per_day"] == 4
     assert data["metrics"]["activity_factor"] == 1.55
-    assert len(call("GET", f"/api/records?date={STATE['date']}")["records"]) == 4
+    records = call("GET", f"/api/records?date={STATE['date']}")["records"]
+    assert len(records) == 4, f"改成一餐数 4 后应有 4 个栏位，实际 {len(records)}"
+    assert records[2]["meal_name"] == "加餐", f"第 3 餐应叫加餐，实际 {records[2]['meal_name']}"
     # 还原
     call("PUT", "/api/profile", {
         "height_cm": before["profile"]["height_cm"],
         "weight_kg": before["profile"]["weight_kg"],
         "gender": before["profile"]["gender"],
         "activity_level": before["profile"]["activity_level"],
-        "meals_per_day": before["profile"]["meals_per_day"],
+        "meals_per_day": before_meals,
         "goal": before["profile"]["goal"],
     })
-    assert len(call("GET", f"/api/records?date={STATE['date']}")["records"]) == 3
+    records = call("GET", f"/api/records?date={STATE['date']}")["records"]
+    assert len(records) == before_meals, f"还原后应有 {before_meals} 个栏位，实际 {len(records)}"
 
 
 def test_settings_and_stats() -> None:
