@@ -56,11 +56,13 @@
         <label class="muted" style="display:flex;align-items:center;gap:6px">
           <input type="checkbox" id="day-include-passed"> 包含已过时段
         </label>
-        <button class="btn" id="btn-day-reset">重置计划</button>
-        <button class="btn primary" id="btn-day-refresh">刷新未固定的餐</button>
+        <button class="btn hidden" id="btn-day-reselect">重新选择方案</button>
+        <button class="btn" id="btn-day-refresh">换一批方案 / 刷新未固定的餐</button>
       </div>
     </div>
     <div class="targets" id="day-summary"></div>
+    <h3 id="day-options-title" class="hidden">请选择一套今日方案</h3>
+    <div class="cards" id="day-options"></div>
     <div class="records" id="day-meals"></div>
   </section>
 

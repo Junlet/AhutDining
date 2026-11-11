@@ -207,82 +207,164 @@ def _meals_per_day() -> int:
     return call("GET", "/api/profile")["metrics"]["meals_per_day"]
 
 
-def test_day_plan_basic() -> None:
-    data = call("GET", "/api/day-plan?include_passed=1")
-    assert len(data["meals"]) == _meals_per_day(), "整日计划的餐次数与每日餐数不一致"
-    assert data["summary"]["meals_remaining"] >= 1
-    for meal in data["meals"]:
-        assert meal["status"] in ("planned", "recorded", "missed")
-        assert meal["window"]
-        if meal["status"] == "planned":
-            assert meal["items"], meal["meal_name"]
-            assert meal["target"]["kcal"] > 0
-    assert data["summary"]["plan_kcal"] > 500
+def _day_state(include_passed: int = 1) -> dict:
+    return call("GET", f"/api/day-plan?include_passed={include_passed}")
+
+
+def _ensure_options(include_passed: int = 1) -> dict:
+    call("POST", "/api/day-plan/reset", {})
+    state = _day_state(include_passed)
+    if state["stage"] != "options":
+        raise AssertionError(f"重置后应回到方案选择，实际 {state['stage']}")
+    return state
+
+
+def _ensure_chosen(include_passed: int = 1) -> dict:
+    state = _day_state(include_passed)
+    if state["stage"] == "options":
+        state = call("POST", "/api/day-plan/choose", {"index": 0})
+    return state
+
+
+def test_day_plan_options() -> None:
+    state = _ensure_options()
+    options = state["options"]
+    assert len(options) == 3, f"A/B/C 应有 3 套方案，实际 {len(options)}"
+    labels = [o["label"] for o in options]
+    assert labels == ["A", "B", "C"], labels
+    for opt in options:
+        assert len(opt["meals"]) == _meals_per_day()
+        planned = [m for m in opt["meals"] if m["status"] == "planned"]
+        assert planned, "方案里没有可安排餐次"
+        for meal in planned:
+            assert meal["items"], f"{opt['label']} 的 {meal['meal_name']} 没有菜品"
+        assert opt["summary"]["plan_kcal"] > 500
+        assert 0 <= opt["avg_score"] <= 1
+        assert opt["level"] in ("强烈推荐", "推荐", "一般", "不推荐")
+    # 三套方案不能完全相同
+    signatures = {tuple(tuple(i["dish_id"] for i in m["items"]) for m in o["meals"]) for o in options}
+    assert len(signatures) > 1, "三套方案内容完全一样"
+
+
+def test_day_plan_reselect() -> None:
+    data = call("POST", "/api/day-plan/refresh", {"include_passed": True})
+    assert data["stage"] == "options"
+    first = [tuple(i["dish_id"] for i in m["items"]) for m in data["options"][0]["meals"]]
+    again = call("POST", "/api/day-plan/refresh", {"include_passed": True})
+    second = [tuple(i["dish_id"] for i in m["items"]) for m in again["options"][0]["meals"]]
+    assert first != second, "换一批方案后内容没有变化"
+
+
+def test_day_plan_choose() -> None:
+    _ensure_options()
+    state = call("POST", "/api/day-plan/choose", {"index": 1})
+    assert state["stage"] == "chosen"
+    assert state["plan"]["label"] == "B"
+    assert state["options"] == [], "选定后其它方案应消失"
+    assert len(state["plan"]["meals"]) == _meals_per_day()
+    STATE["day_plan"] = state["plan"]
 
 
 def test_day_plan_time_filter() -> None:
-    data = call("GET", "/api/day-plan?include_passed=0")
-    for meal in data["meals"]:
-        assert meal["status"] in ("planned", "recorded", "missed")
+    state = _day_state(0)
+    plan = state.get("plan") or {}
+    meals = plan.get("meals") or []
+    for meal in meals:
         if meal["status"] == "missed":
             assert not meal["items"], "已错过的餐次不该有推荐内容"
-    summary = data["summary"]
-    assert summary["meals_remaining"] + summary["meals_recorded"] \
-        + summary["meals_missed"] == len(data["meals"])
+    if not state.get("include_passed"):
+        assert not any(m["status"] == "missed" and m["items"] for m in meals)
+    else:
+        assert state.get("auto_include_passed") is True, "自动包含已过时段时应给出标记"
 
 
 def test_day_plan_pin_and_refresh() -> None:
-    plan = call("GET", "/api/day-plan?include_passed=1")
-    planned = [m for m in plan["meals"] if m["status"] == "planned"]
+    state = _ensure_chosen()
+    planned = [m for m in state["plan"]["meals"] if m["status"] == "planned"]
     assert len(planned) >= 2, "至少两餐才能验证固定后刷新"
     target = planned[0]
     pinned_ids = [i["dish_id"] for i in target["items"]]
-    after_pin = call("POST", "/api/day-plan/pin",
-                     {"meal_index": target["meal_index"], "pinned": True})
-    block = next(m for m in after_pin["meals"] if m["meal_index"] == target["meal_index"])
+    after = call("POST", "/api/day-plan/pin",
+                 {"meal_index": target["meal_index"], "pinned": True})
+    block = next(m for m in after["plan"]["meals"] if m["meal_index"] == target["meal_index"])
     assert block["pinned"] is True
+
     refreshed = call("POST", "/api/day-plan/refresh", {"include_passed": True})
-    block2 = next(m for m in refreshed["meals"] if m["meal_index"] == target["meal_index"])
+    block2 = next(m for m in refreshed["plan"]["meals"] if m["meal_index"] == target["meal_index"])
     assert [i["dish_id"] for i in block2["items"]] == pinned_ids, "固定餐次被改掉了"
 
 
 def test_day_plan_only_meal() -> None:
-    plan = call("GET", "/api/day-plan?include_passed=1")
-    planned = [m for m in plan["meals"] if m["status"] == "planned" and m["items"]]
-    assert len(planned) >= 2
+    state = _ensure_chosen()
+    planned = [m for m in state["plan"]["meals"] if m["status"] == "planned" and m["items"]]
+    assert len(planned) >= 2, "至少两餐才能验证单餐刷新"
     keep = {m["meal_index"]: [i["dish_id"] for i in m["items"]] for m in planned}
     change_index = planned[0]["meal_index"]
     swapped = call("POST", "/api/day-plan/refresh",
                    {"only_meal": change_index, "include_passed": True})
-    for meal in swapped["meals"]:
+    for meal in swapped["plan"]["meals"]:
         idx = meal["meal_index"]
         if idx in keep and idx != change_index and meal["status"] == "planned":
-            assert [i["dish_id"] for i in meal["items"]] == keep[idx], "「换这道餐」改动了其它餐"
+            assert [i["dish_id"] for i in meal["items"]] == keep[idx], "单餐刷新改动了其它餐"
+
+
+def test_day_plan_set_meal() -> None:
+    state = _ensure_chosen()
+    planned = [m for m in state["plan"]["meals"] if m["status"] == "planned"]
+    assert planned
+    target = planned[0]
+    dishes = call("GET", "/api/dishes?q=" + "%E7%B1%B3%E9%A5%AD")["items"]
+    assert dishes, "找不到米饭示例菜品"
+    dish_id = dishes[0]["dish_id"]
+    before_score = target["scores"]["total"]
+
+    data = call("POST", "/api/day-plan/set-meal",
+                {"meal_index": target["meal_index"], "dish_ids": [dish_id]})
+    block = data["updated_meal"]
+    assert [i["dish_id"] for i in block["items"]] == [dish_id], "替换后的内容不对"
+    assert block["source"] == "manual"
+    assert block["pinned"] is True, "用户自选的餐应自动固定"
+    assert block["level"] in ("强烈推荐", "推荐", "一般", "不推荐")
+    assert block["scores"]["total"] != before_score
+
+    # 单菜通常不均衡，自动补齐后推荐度应不降
+    low = block["scores"]["total"]
+    filled = call("POST", "/api/day-plan/complete-meal",
+                  {"meal_index": target["meal_index"]})
+    after = filled["updated_meal"]
+    assert len(after["items"]) >= 1
+    assert after["scores"]["total"] >= low - 1e-6, "自动补齐后推荐度不应下降"
+
+    # 自选并固定后，刷新整日不应改动这一餐
+    kept = [i["dish_id"] for i in after["items"]]
+    refreshed = call("POST", "/api/day-plan/refresh", {"include_passed": True})
+    block3 = next(m for m in refreshed["plan"]["meals"] if m["meal_index"] == target["meal_index"])
+    assert [i["dish_id"] for i in block3["items"]] == kept, "自选的餐在刷新后应保持不变"
 
 
 def test_day_plan_confirm_effect() -> None:
-    plan = call("GET", "/api/day-plan?include_passed=1")
-    planned = [m for m in plan["meals"] if m["status"] == "planned" and m["items"]]
+    state = _ensure_chosen()
+    planned = [m for m in state["plan"]["meals"] if m["status"] == "planned" and m["items"]]
     assert planned
     target = planned[-1]
     call("POST", "/api/records/confirm", {
-        "date": plan["date"],
+        "date": state["date"],
         "meal_index": target["meal_index"],
         "items": [{"dish_id": i["dish_id"]} for i in target["items"]],
         "status": "confirmed",
     })
     after = call("GET", "/api/day-plan?include_passed=1")
-    block = next(m for m in after["meals"] if m["meal_index"] == target["meal_index"])
+    block = next(m for m in after["plan"]["meals"] if m["meal_index"] == target["meal_index"])
     assert block["status"] == "recorded", "确认后该餐应变成已记录"
-    assert after["summary"]["meals_recorded"] >= 1
-    call("DELETE", f"/api/records/{plan['date']}/{target['meal_index']}")
-    call("POST", "/api/day-plan/reset", {})
+    assert after["plan"]["summary"]["meals_recorded"] >= 1
+    call("DELETE", f"/api/records/{state['date']}/{target['meal_index']}")
 
 
 def test_day_plan_reset() -> None:
     data = call("POST", "/api/day-plan/reset", {})
-    assert data["include_passed"] is False
-    assert all(not m["pinned"] for m in data["meals"]), "重置后不应残留固定项"
+    assert data["stage"] == "options"
+    assert data["plan"] is None
+    assert len(data["options"]) == 3
 
 
 STATE: dict = {}
@@ -301,10 +383,13 @@ for name, fn in [
     ("手动补记与清空", test_manual_record_and_clear),
     ("修改资料联动餐次", test_profile_update),
     ("设置与统计", test_settings_and_stats),
-    ("今日计划·整日推荐", test_day_plan_basic),
+    ("今日计划·A/B/C 方案", test_day_plan_options),
+    ("今日计划·换一批方案", test_day_plan_reselect),
+    ("今日计划·选择方案", test_day_plan_choose),
     ("今日计划·时间过滤", test_day_plan_time_filter),
     ("今日计划·固定与刷新", test_day_plan_pin_and_refresh),
-    ("今日计划·单餐替换", test_day_plan_only_meal),
+    ("今日计划·单餐刷新", test_day_plan_only_meal),
+    ("今日计划·自选菜替换并补齐", test_day_plan_set_meal),
     ("今日计划·确认联动", test_day_plan_confirm_effect),
     ("今日计划·重置", test_day_plan_reset),
 ]:

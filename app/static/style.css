@@ -222,3 +222,15 @@ table.cmp th { color: var(--ink-2); font-weight: 500; }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .placeholder-text { padding: 30px; text-align: center; color: var(--ink-2); }
+.hidden { display: none !important; }
+.option-card { border: 2px solid var(--line); }
+.option-card:hover { border-color: var(--green); }
+.option-card .option-meal { padding: 8px 14px; border-bottom: 1px dashed var(--line); }
+.option-card .option-meal:last-of-type { border-bottom: none; }
+.option-card .option-meal-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+.option-card .option-meal-items { font-size: 12.5px; color: var(--ink-2); }
+.badge.manual { background: #eef4ff; color: #2b5bbd; }
+.level-badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
+.level-good { background: var(--green-soft); color: var(--green); }
+.level-mid { background: #fdf3e1; color: var(--amber); }
+.level-bad { background: #fdecec; color: var(--red); }

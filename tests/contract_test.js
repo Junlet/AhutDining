@@ -101,18 +101,39 @@ async function test(name, fn) {
   });
 
   await test('今日计划字段', async () => {
-    const plan = await get('/api/day-plan?include_passed=1');
-    ['now', 'daily.kcal', 'summary.meals_remaining', 'summary.meals_total',
-      'summary.plan_kcal', 'summary.plan_protein', 'summary.plan_fat', 'summary.plan_carbs',
-      'summary.plan_price', 'summary.coverage', 'summary.gap_kcal'].forEach((p) => need(plan, p));
-    if (!plan.meals.length) throw new Error('meals 为空');
-    const meal = plan.meals[0];
-    ['meal_name', 'window', 'status', 'pinned', 'target.kcal', 'totals.kcal',
-      'totals.price', 'macro_pct.protein', 'advice', 'scores.total'].forEach((p) => need(meal, p));
-    if (!Array.isArray(meal.items)) throw new Error('items 不是数组');
-    const planned = plan.meals.find((m) => m.status === 'planned' && m.items.length);
-    if (planned) need(planned, 'items.0.dish_id');
-    if (!Array.isArray(plan.remaining_indices)) throw new Error('remaining_indices 不是数组');
+    const post = async (p, body = {}) => {
+      const res = await fetch(BASE + p, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(`${p} -> ${json.error}`);
+      return json.data;
+    };
+
+    let st = await get('/api/day-plan?include_passed=1');
+    ['stage', 'now', 'daily.kcal', 'include_passed'].forEach((p) => need(st, p));
+
+    st = await post('/api/day-plan/reset');
+    if (st.stage !== 'options') throw new Error('reset 后 stage 应为 options');
+    need(st, 'options.0.label');
+    need(st, 'options.0.avg_score');
+    need(st, 'options.0.level');
+    need(st, 'options.0.summary.plan_kcal');
+    need(st, 'options.0.meals.0.meal_name');
+    need(st, 'options.0.meals.0.status');
+    if (!Array.isArray(st.options[0].meals[0].items)) throw new Error('items 不是数组');
+
+    st = await post('/api/day-plan/choose', { index: 0 });
+    if (st.stage !== 'chosen') throw new Error('choose 后 stage 应为 chosen');
+    need(st, 'plan.label');
+    need(st, 'plan.summary.meals_remaining');
+    need(st, 'plan.summary.coverage');
+    const meal = st.plan.meals.find((m) => m.status === 'planned') || st.plan.meals[0];
+    ['meal_name', 'window', 'status', 'pinned', 'source', 'level', 'target.kcal',
+      'totals.kcal', 'totals.price', 'macro_pct.protein', 'advice', 'scores.total'].forEach((p) => need(meal, p));
+    if (!Array.isArray(meal.items)) throw new Error('meal.items 不是数组');
+    await post('/api/day-plan/reset');
   });
 
   await test('统计字段', async () => {

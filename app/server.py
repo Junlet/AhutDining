@@ -419,15 +419,33 @@ def handle_settings(body: dict):
     return ok({"changed": changed, "settings": settings})
 
 
+def _day_payload(state: dict) -> dict:
+    """统一两种阶段（未选方案 / 已选方案）的顶层字段，方便前端直接读。"""
+    plan = state.get("plan")
+    options = state.get("options") or []
+    ref = plan or (options[0] if options else None)
+    if ref:
+        state.setdefault("daily", ref.get("daily"))
+        state.setdefault("consumed", ref.get("consumed"))
+        state.setdefault("suggest_include_passed", ref.get("suggest_include_passed"))
+    state.setdefault("now", recommender._now_hhmm())
+    if plan:
+        state.setdefault("summary", plan.get("summary"))
+        state.setdefault("meals", plan.get("meals"))
+    state["slot_info"] = recommender.current_slot()
+    return state
+
+
 def handle_day_plan(query: dict):
     date = (query.get("date") or [db.today()])[0]
-    include_passed = None
     if "include_passed" in query:
         include_passed = (query.get("include_passed") or ["0"])[0] in ("1", "true", "yes")
-    refresh = (query.get("refresh") or ["0"])[0] in ("1", "true", "yes")
-    data = recommender.get_day_plan(date, refresh=refresh, include_passed=include_passed)
-    data["slot_info"] = recommender.current_slot()
-    return ok(data)
+        try:
+            state = recommender.get_day_plan(date, include_passed=include_passed)
+        except ValueError as exc:
+            return fail(str(exc))
+        return ok(_day_payload(state))
+    return ok(_day_payload(recommender.get_day_state(date)))
 
 
 def handle_day_plan_refresh(body: dict):
@@ -435,14 +453,23 @@ def handle_day_plan_refresh(body: dict):
     include_passed = body.get("include_passed")
     only_meal = body.get("only_meal")
     try:
-        data = recommender.get_day_plan(
+        state = recommender.get_day_plan(
             date, refresh=True,
             include_passed=None if include_passed is None else bool(include_passed),
             only_meal=int(only_meal) if only_meal else None)
     except ValueError as exc:
         return fail(str(exc))
-    data["slot_info"] = recommender.current_slot()
-    return ok(data)
+    return ok(_day_payload(state))
+
+
+def handle_day_plan_choose(body: dict):
+    date = body.get("date") or db.today()
+    index = int(body.get("index") or 0)
+    try:
+        state = recommender.choose_day_option(date, index)
+    except ValueError as exc:
+        return fail(str(exc))
+    return ok(_day_payload(state))
 
 
 def handle_day_plan_pin(body: dict):
@@ -450,21 +477,47 @@ def handle_day_plan_pin(body: dict):
     meal_index = int(body.get("meal_index") or 0)
     if not meal_index:
         return fail("缺少 meal_index")
-    pinned = bool(body.get("pinned"))
     try:
-        data = recommender.get_day_plan(date, pin=(meal_index, pinned))
+        state = recommender.pin_day_meal(date, meal_index, bool(body.get("pinned")))
     except ValueError as exc:
         return fail(str(exc))
-    data["slot_info"] = recommender.current_slot()
-    return ok(data)
+    return ok(_day_payload(state))
+
+
+def handle_day_plan_set_meal(body: dict):
+    date = body.get("date") or db.today()
+    meal_index = int(body.get("meal_index") or 0)
+    dish_ids = body.get("dish_ids") or []
+    if not meal_index or not dish_ids:
+        return fail("需要 meal_index 和 dish_ids")
+    try:
+        state = recommender.set_day_meal(date, meal_index, [int(x) for x in dish_ids])
+    except ValueError as exc:
+        return fail(str(exc))
+    payload = _day_payload(state)
+    plan = state.get("plan") or {}
+    block = next((b for b in plan.get("meals", []) if b["meal_index"] == meal_index), None)
+    payload["updated_meal"] = block
+    return ok(payload)
+
+
+def handle_day_plan_complete_meal(body: dict):
+    date = body.get("date") or db.today()
+    meal_index = int(body.get("meal_index") or 0)
+    try:
+        state = recommender.complete_day_meal(date, meal_index)
+    except ValueError as exc:
+        return fail(str(exc))
+    payload = _day_payload(state)
+    block = next((b for b in (state.get("plan") or {}).get("meals", [])
+                  if b["meal_index"] == meal_index), None)
+    payload["updated_meal"] = block
+    return ok(payload)
 
 
 def handle_day_plan_reset(body: dict):
     date = body.get("date") or db.today()
-    db.execute("DELETE FROM day_plans WHERE user_id = 1 AND date = ?", (date,))
-    data = recommender.get_day_plan(date, include_passed=False)
-    data["slot_info"] = recommender.current_slot()
-    return ok(data)
+    return ok(_day_payload(recommender.reset_day_plan(date)))
 
 
 def handle_stats():
@@ -506,7 +559,11 @@ ROUTES: list[Route] = [
     ("POST", r"^/api/plans/evaluate$", lambda req, m, q, b: handle_plans_evaluate(b)),
     ("GET", r"^/api/day-plan$", lambda req, m, q, b: handle_day_plan(q)),
     ("POST", r"^/api/day-plan/refresh$", lambda req, m, q, b: handle_day_plan_refresh(b)),
+    ("POST", r"^/api/day-plan/choose$", lambda req, m, q, b: handle_day_plan_choose(b)),
     ("POST", r"^/api/day-plan/pin$", lambda req, m, q, b: handle_day_plan_pin(b)),
+    ("POST", r"^/api/day-plan/set-meal$", lambda req, m, q, b: handle_day_plan_set_meal(b)),
+    ("POST", r"^/api/day-plan/complete-meal$",
+     lambda req, m, q, b: handle_day_plan_complete_meal(b)),
     ("POST", r"^/api/day-plan/reset$", lambda req, m, q, b: handle_day_plan_reset(b)),
     ("GET", r"^/api/dishes$", lambda req, m, q, b: handle_dishes(q)),
     ("GET", r"^/api/dishes/(?P<id>\d+)$", lambda req, m, q, b: handle_dish_detail(int(m["id"]))),
