@@ -22,3 +22,7 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 项目快照备份
+backups/
+restored/

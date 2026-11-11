@@ -55,10 +55,13 @@ AhutDining/
 │   ├── dining.db             # 运行期数据库（gitignore）
 │   └── dishes_sample.csv     # 示例菜品 CSV（可当导入模板）
 ├── media/                    # 用户上传的菜品图片（gitignore）
-├── tools/import_dishes.py    # CSV 导入 / 导出
+├── tools/
+│   ├── import_dishes.py      # CSV 导入 / 导出
+│   └── backup.py             # 项目快照备份 / 回滚
 ├── tests/
-│   ├── smoke_test.py         # 13 项接口冒烟测试
-│   └── contract_test.js      # 前端数据契约校验（Node）
+│   ├── smoke_test.py         # 22 项接口冒烟测试
+│   ├── contract_test.js      # 前端数据契约校验（Node）
+│   └── dom_smoke.js          # 前端渲染冒烟（Node + 极简 DOM 桩，防白屏）
 └── docs/
     ├── 需求对照.md           # 13 条需求 → 实现位置 → 验收方式
     └── 数据格式.md           # CSV 字段与替换真实菜单的方法
@@ -124,7 +127,23 @@ python tools/import_dishes.py --file 真实菜单.csv --replace   # 导入真实
 python run.py                  # 先启动服务
 python tests/smoke_test.py     # 22 项接口测试（含 9 项今日计划）
 node tests/contract_test.js    # 7 项前端字段契约（需 Node）
+node tests/dom_smoke.js        # 8 项前端渲染冒烟（需 Node，防白屏回归）
 ```
+
+## 备份与回滚
+
+每次改代码/改数据前后都可以打个快照（zip 存在 `backups/`，已 gitignore）：
+
+```bash
+python tools/backup.py --tag before-xxx     # 改之前
+python tools/backup.py --tag after-xxx      # 改完验证通过后
+python tools/backup.py --list               # 列出所有备份
+python tools/backup.py --restore 20261111-225418   # 解压到 restored/<时间戳>/ 对照
+```
+
+备份内容包含代码、文档、示例数据 CSV，**不包含** `.git`、运行期数据库 `data/dining.db`、
+`media/` 里用户上传的图片（这些体积大且可重建/应自行保留）。
+`--restore` 只解压到 `restored/` 供对照，不会覆盖当前代码，确认后手动拷回即可。
 
 ## 上传到 GitHub
 

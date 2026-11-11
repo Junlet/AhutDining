@@ -1,4 +1,4 @@
-/* 安工大校园用餐推荐 —— 前端逻辑（原生 JS，无构建步骤） */
+﻿/* 安工大校园用餐推荐 —— 前端逻辑（原生 JS，无构建步骤） */
 const API = '';
 const state = {
   boot: null,
@@ -111,9 +111,19 @@ async function init() {
     if (e.target.id === 'modal') closeModal();
   });
 
-  await loadBootstrap();
-  await loadPlans();
+  await step('基础数据', loadBootstrap);
+  await step('单餐推荐', loadPlans);
   setInterval(checkSlot, 30000);
+}
+
+/** 出错只提示，不让整个页面消失 */
+async function step(label, fn) {
+  try {
+    await fn();
+  } catch (err) {
+    console.error(`[${label}]`, err);
+    toast(`${label}加载失败：${err.message || err}`);
+  }
 }
 
 async function loadBootstrap() {
@@ -130,10 +140,10 @@ async function loadBootstrap() {
   renderSlotSettings();
   renderFilters();
   document.getElementById('record-date').value = data.date;
-  await loadDayPlan();
-  await loadRecords();
-  await loadFavorites();
-  await renderPickList();
+  await step('今日计划', loadDayPlan);
+  await step('用餐记录', loadRecords);
+  await step('收藏', loadFavorites);
+  await step('菜品选择', renderPickList);
 }
 
 function renderTodaybar() {
@@ -474,7 +484,7 @@ function renderDayOptions(options, chosen) {
       mealsBox.appendChild(el(`
         <div class="option-meal">
           <div class="option-meal-name">${meal.meal_name} ${status}
-            <span class="dish-meta">· ${fmt(meal.totals.kcal)} kcal · ${fmt(meal.scores.total * 100).toFixed(0)} 分</span>
+            <span class="dish-meta">· ${fmt(meal.totals.kcal)} kcal · ${(meal.scores.total * 100).toFixed(0)} 分</span>
           </div>
           <div class="option-meal-items">${items}</div>
         </div>`));
@@ -1284,8 +1294,30 @@ function bindTabs() {
   });
 }
 
+/* 任何未捕获的错误都只提示、不销毁页面，避免出现整页空白 */
+window.addEventListener('error', (event) => {
+  console.error('[window.error]', event.error || event.message);
+  try { toast(`脚本出错：${event.message || '未知错误'}`); } catch (_) { /* 忽略 */ }
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('[unhandledrejection]', event.reason);
+  const msg = (event.reason && event.reason.message) || String(event.reason || '未知错误');
+  try { toast(`请求出错：${msg}`); } catch (_) { /* 忽略 */ }
+});
+
+function showFatalBanner(err) {
+  const banner = document.createElement('div');
+  banner.className = 'fatal-banner';
+  banner.innerHTML = `<b>页面初始化失败：</b>${escapeHtml(err && err.message ? err.message : String(err))}
+    <button class="btn small" id="fatal-retry">重新加载</button>
+    <button class="btn small" id="fatal-dismiss">关闭</button>`;
+  document.body.prepend(banner);
+  banner.querySelector('#fatal-retry').addEventListener('click', () => location.reload());
+  banner.querySelector('#fatal-dismiss').addEventListener('click', () => banner.remove());
+}
+
 init().catch((err) => {
-  document.body.innerHTML = `<div style="padding:40px;font-family:sans-serif">
-    <h2>前端启动失败</h2><p>${err.message}</p>
-    <p>请确认服务已启动：双击 start.bat，或运行 python run.py</p></div>`;
+  console.error('[init]', err);
+  showFatalBanner(err);
 });
