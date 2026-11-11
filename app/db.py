@@ -151,6 +151,15 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- 今日用餐计划：一整天（剩余餐次）的套餐安排，含"固定"状态
+CREATE TABLE IF NOT EXISTS day_plans (
+    user_id    INTEGER NOT NULL DEFAULT 1,
+    date       TEXT NOT NULL,
+    data_json  TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, date)
+);
 """
 
 DEFAULT_SETTINGS = {

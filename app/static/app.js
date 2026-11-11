@@ -86,6 +86,9 @@ function macroBars(pctObj) {
 async function init() {
   bindTabs();
   document.getElementById('btn-refresh').addEventListener('click', refreshPlans);
+  document.getElementById('btn-day-refresh').addEventListener('click', refreshDayPlan);
+  document.getElementById('btn-day-reset').addEventListener('click', resetDayPlan);
+  document.getElementById('day-include-passed').addEventListener('change', loadDayPlan);
   document.getElementById('btn-search').addEventListener('click', runSearch);
   document.getElementById('search-q').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') runSearch();
@@ -127,6 +130,7 @@ async function loadBootstrap() {
   renderSlotSettings();
   renderFilters();
   document.getElementById('record-date').value = data.date;
+  await loadDayPlan();
   await loadRecords();
   await loadFavorites();
   await renderPickList();
@@ -320,6 +324,7 @@ async function refreshAfterConfirm(data) {
   state.boot = boot;
   renderTodaybar();
   renderMetrics();
+  await loadDayPlan();
   await loadRecords();
   // 已确认这一餐后，自动把首页切到下一餐的推荐
   if (data && data.next_meal) {
@@ -331,6 +336,214 @@ async function refreshAfterConfirm(data) {
     await loadPlans();
     toast(`下一餐已按剩余额度重新计算（${data.next_meal.meal_name}）`);
   }
+}
+
+/* ── 今日用餐计划（按当前时间推断还剩几餐，整日一起推荐） ───────── */
+const DAY_STATUS_TEXT = { planned: '待安排', recorded: '已记录', missed: '已错过' };
+
+async function loadDayPlan() {
+  const includePassed = document.getElementById('day-include-passed').checked;
+  const data = await api(`/api/day-plan?include_passed=${includePassed ? 1 : 0}`);
+  state.day = data;
+  renderDayPlan(data);
+}
+
+function renderDayPlan(data) {
+  const s = data.summary;
+  const daily = data.daily;
+  document.getElementById('day-hint').textContent =
+    `现在是 ${data.now}，今天共 ${s.meals_total} 餐：已记录 ${s.meals_recorded} 餐、` +
+    `还剩 ${s.meals_remaining} 餐待安排` +
+    (s.meals_missed ? `、已错过 ${s.meals_missed} 餐（勾选「包含已过时段」可补排）` : '') +
+    '。固定某一餐后，刷新只更换其它餐次。';
+
+  const pinnedCount = data.meals.filter((m) => m.pinned).length;
+  document.getElementById('day-summary').innerHTML = `
+    <div class="target"><div class="label">整日计划覆盖</div>
+      <div class="value">${fmt(s.plan_kcal)} <small>/ ${fmt(daily.kcal)} kcal</small></div>
+      <div class="bar"><i style="width:${Math.min(100, (s.coverage || 0) * 100)}%"></i></div>
+      <div class="muted">还差 ${fmt(s.gap_kcal)} kcal（${pct((s.coverage || 0) * 100)}）</div></div>
+    <div class="target"><div class="label">计划蛋白质</div>
+      <div class="value">${fmt(s.plan_protein, 1)} <small>/ ${fmt(daily.protein, 1)} g</small></div>
+      <div class="muted">指南 10–20% 供能比</div></div>
+    <div class="target"><div class="label">计划脂肪 / 碳水</div>
+      <div class="value">${fmt(s.plan_fat, 1)} <small>g</small> · ${fmt(s.plan_carbs, 1)} <small>g</small></div>
+      <div class="muted">目标 ${fmt(daily.fat, 1)}g / ${fmt(daily.carbs, 1)}g</div></div>
+    <div class="target"><div class="label">预计花费</div>
+      <div class="value">¥${fmt(s.plan_price, 1)}</div>
+      <div class="muted">已固定 ${pinnedCount} 餐</div></div>`;
+
+  const box = document.getElementById('day-meals');
+  box.innerHTML = '';
+  data.meals.forEach((meal) => box.appendChild(dayMealCard(meal, data)));
+}
+
+function dayMealCard(meal, data) {
+  let cls = 'record';
+  if (meal.status === 'missed') cls += ' empty missed';
+  if (meal.status === 'planned' && !meal.items.length) cls += ' empty';
+  if (meal.pinned) cls += ' pinned';
+
+  const card = el(`
+    <div class="${cls}">
+      <h3>
+        <span>${meal.meal_name}
+          <span class="meal-window">${meal.window}</span></span>
+        <span class="row gap" style="gap:6px">
+          ${meal.pinned ? '<span class="badge">已固定</span>' : ''}
+          <span class="${meal.status === 'planned' ? 'badge amber' : meal.status === 'recorded' ? 'badge' : 'badge grey'}">
+            ${DAY_STATUS_TEXT[meal.status] || meal.status}</span>
+        </span>
+      </h3>
+      <div class="dish-meta">
+        ${meal.status === 'planned'
+          ? `本餐目标 ${fmt(meal.target.kcal)} kcal · 蛋白 ${fmt(meal.target.protein, 1)}g`
+          : meal.status === 'recorded'
+            ? `实际摄入 ${fmt(meal.totals.kcal)} kcal`
+            : '已过时段且没有记录'}
+      </div>
+      <div class="dish-list"></div>
+      ${meal.status === 'planned' && meal.items.length ? `
+        <div class="macro-line">
+          <span><b>${fmt(meal.totals.kcal)}</b> kcal</span>
+          <span>蛋白 <b>${fmt(meal.totals.protein, 1)}</b>g</span>
+          <span>脂肪 <b>${fmt(meal.totals.fat, 1)}</b>g</span>
+          <span>碳水 <b>${fmt(meal.totals.carbs, 1)}</b>g</span>
+          <span><b>¥${fmt(meal.totals.price, 1)}</b></span>
+        </div>
+        <div class="macro-line" style="gap:12px">
+          <span class="badge">蛋白 ${pct(meal.macro_pct.protein)}</span>
+          <span class="badge amber">脂肪 ${pct(meal.macro_pct.fat)}</span>
+          <span class="badge grey">碳水 ${pct(meal.macro_pct.carbs)}</span>
+        </div>
+        <div class="${meal.scores.total >= 0.72 ? 'advice' : 'advice warn'}">
+          ${(meal.advice || []).slice(0, 2).join('；')}
+        </div>` : ''}
+      <div class="card-actions"></div>
+    </div>`);
+
+  const list = card.querySelector('.dish-list');
+  if (meal.items && meal.items.length) {
+    meal.items.forEach((item) => {
+      const row = el(`<div class="dish-row">
+        <div class="grow">
+          <div class="dish-name">${item.name}</div>
+          <div class="dish-meta">${item.canteen || ''} · ${item.window || ''} · ¥${fmt(item.price, 1)} · ${fmt(item.kcal)} kcal</div>
+        </div>
+        <div class="dish-meta">蛋白 ${fmt(item.protein, 1)}g</div>
+      </div>`);
+      row.addEventListener('click', () => openDish(item.dish_id));
+      list.appendChild(row);
+    });
+  } else if (meal.status === 'missed') {
+    list.innerHTML = `<div class="dish-meta" style="padding:6px 0">这一餐已经过了时段，没有记录。可到「用餐记录」补记，或勾选上方「包含已过时段」重新安排。</div>`;
+  } else if (meal.status === 'planned') {
+    list.innerHTML = `<div class="dish-meta" style="padding:6px 0">这个时段暂时没有凑出合适组合。</div>`;
+  }
+
+  const actions = card.querySelector('.card-actions');
+  if (meal.status === 'planned' && meal.items.length) {
+    const pinBtn = el(`<button class="btn ${meal.pinned ? '' : 'ghost'}">${meal.pinned ? '取消固定' : '固定这餐'}</button>`);
+    pinBtn.addEventListener('click', () => toggleDayPin(meal.meal_index, !meal.pinned));
+    actions.appendChild(pinBtn);
+
+    const swapBtn = el(`<button class="btn">换这道餐</button>`);
+    swapBtn.addEventListener('click', () => refreshOnlyMeal(meal.meal_index));
+    actions.appendChild(swapBtn);
+
+    const okBtn = el(`<button class="btn primary grow">确认这餐</button>`);
+    okBtn.addEventListener('click', () => confirmDayMeal(meal, data));
+    actions.appendChild(okBtn);
+  } else if (meal.status === 'recorded') {
+    const tip = el(`<span class="muted">这一餐已计入今日摄入，可在「用餐记录」里修改</span>`);
+    actions.appendChild(tip);
+    const goBtn = el(`<button class="btn">去记录页</button>`);
+    goBtn.addEventListener('click', () => switchTab('records'));
+    actions.appendChild(goBtn);
+  }
+  return card;
+}
+
+async function toggleDayPin(mealIndex, pinned) {
+  try {
+    const data = await api('/api/day-plan/pin', {
+      method: 'POST',
+      body: JSON.stringify({ meal_index: mealIndex, pinned }),
+    });
+    state.day = data;
+    renderDayPlan(data);
+    toast(pinned ? '已固定这一餐，刷新不会改动它' : '已取消固定');
+  } catch (err) { toast(err.message); }
+}
+
+async function refreshOnlyMeal(mealIndex) {
+  try {
+    const data = await api('/api/day-plan/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ only_meal: mealIndex }),
+    });
+    state.day = data;
+    renderDayPlan(data);
+    toast('已更换这一餐，其余保持不变');
+  } catch (err) { toast(err.message); }
+}
+
+async function confirmDayMeal(meal, data) {
+  try {
+    await api('/api/records/confirm', {
+      method: 'POST',
+      body: JSON.stringify({
+        date: data.date,
+        meal_index: meal.meal_index,
+        items: meal.items.map((i) => ({ dish_id: i.dish_id })),
+        status: 'confirmed',
+      }),
+    });
+    toast(`已记录${meal.meal_name}`);
+    const boot = await api('/api/bootstrap');
+    state.boot = boot;
+    renderTodaybar();
+    renderMetrics();
+    await loadDayPlan();
+    await loadRecords();
+  } catch (err) { toast(err.message); }
+}
+
+async function refreshDayPlan() {
+  const includePassed = document.getElementById('day-include-passed').checked;
+  try {
+    const data = await api('/api/day-plan/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ include_passed: includePassed }),
+    });
+    state.day = data;
+    renderDayPlan(data);
+    const pinned = data.meals.filter((m) => m.pinned).length;
+    toast(pinned ? `已刷新，${pinned} 餐固定不变` : '已刷新整日计划');
+  } catch (err) { toast(err.message); }
+}
+
+async function resetDayPlan() {
+  try {
+    const data = await api('/api/day-plan/reset', { method: 'POST', body: '{}' });
+    document.getElementById('day-include-passed').checked = false;
+    state.day = data;
+    renderDayPlan(data);
+    toast('已重置今日计划（固定项也清空）');
+  } catch (err) { toast(err.message); }
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach((t) => {
+    t.classList.toggle('active', t.dataset.tab === tab);
+  });
+  document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
+  document.getElementById(`panel-${tab}`).classList.add('active');
+  if (tab === 'records') loadRecords();
+  if (tab === 'favorites') loadFavorites();
+  if (tab === 'search') runSearch();
+  if (tab === 'custom') renderPickList();
+  if (tab === 'day') loadDayPlan();
 }
 
 /* ── 时段自动刷新（需求 11） ─────────────────────────────────── */
@@ -345,6 +558,7 @@ async function checkSlot() {
       renderSlotSelect();
       await loadPlans();
       await loadRecords();
+      await loadDayPlan();
       toast(`进入${info.label}时段，推荐已自动刷新`);
     }
     state.lastSlotKey = key;
@@ -873,16 +1087,7 @@ function closeModal() {
 /* ── 标签页 ─────────────────────────────────────────────────── */
 function bindTabs() {
   document.querySelectorAll('.tab').forEach((tab) => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
-      document.querySelectorAll('.panel').forEach((p) => p.classList.remove('active'));
-      tab.classList.add('active');
-      document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
-      if (tab.dataset.tab === 'records') loadRecords();
-      if (tab.dataset.tab === 'favorites') loadFavorites();
-      if (tab.dataset.tab === 'search') runSearch();
-      if (tab.dataset.tab === 'custom') renderPickList();
-    });
+    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
   });
 }
 

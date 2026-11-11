@@ -265,6 +265,8 @@ def _item_view(dish: dict) -> dict:
         "fat": dish["fat"],
         "carbs": dish["carbs"],
         "is_self_service": dish["is_self_service"],
+        "is_staple": int(dish.get("is_staple") or 0),
+        "is_vegetable": int(dish.get("is_vegetable") or 0),
         "tags": dish["tags_list"],
         "image": dish["image"],
         "favorite": dish["favorite"],
@@ -310,17 +312,12 @@ def _dedupe_key_plan(plan: dict) -> tuple:
     return tuple(sorted(i["dish_id"] for i in plan["items"]))
 
 
-def build_plans(slot: str, date: str, batch_no: int, count: int = 6) -> list[dict]:
-    """枚举并打分，返回若干套推荐套餐（已按分数排序、跨食堂去重）。"""
-    profile = db.query_one("SELECT * FROM profiles WHERE user_id = 1") or {}
-    target, context = effective_target(profile, date, slot)
-    dishes = load_dishes()
-
+def candidate_plans(slot: str, target: dict, dishes: list[dict]) -> list[dict]:
+    """枚举某餐次的所有可行组合并打分，按分数降序返回（不含 id/batch 等元数据）。"""
     by_canteen: dict[int, list[dict]] = {}
     for dish in dishes:
         by_canteen.setdefault(dish["canteen_id"], []).append(dish)
 
-    rng = random.Random(f"{date}-{slot}-{batch_no}")
     candidates: list[dict] = []
     seen: set[tuple] = set()
 
@@ -389,6 +386,19 @@ def build_plans(slot: str, date: str, batch_no: int, count: int = 6) -> list[dic
             })
 
     candidates.sort(key=lambda c: c["scores"]["total"], reverse=True)
+    return candidates
+
+
+def build_plans(slot: str, date: str, batch_no: int, count: int = 6) -> list[dict]:
+    """枚举并打分，返回若干套推荐套餐（已按分数排序、跨食堂去重）。"""
+    profile = db.query_one("SELECT * FROM profiles WHERE user_id = 1") or {}
+    target, context = effective_target(profile, date, slot)
+    dishes = load_dishes()
+    candidates = candidate_plans(slot, target, dishes)
+    if not candidates:
+        return []
+
+    rng = random.Random(f"{date}-{slot}-{batch_no}")
 
     # 刷新要能真的换内容：在"分数最高的若干套"里按批次做加权随机抽样，
     # 同时优先覆盖不同食堂，避免每次刷新都是同一批。
@@ -575,3 +585,318 @@ def search_dishes(q: str = "", canteen: str = "", category: str = "",
     else:
         out.sort(key=lambda d: d["scores"]["total"], reverse=True)
     return out
+
+# ── 今日用餐计划（按当前时间点推断还剩几餐，给出全天安排） ──────────────
+def meal_windows() -> dict[str, tuple[str, str]]:
+    """从设置里取每个餐次的时间窗。"""
+    out = {}
+    for slot in ("breakfast", "lunch", "dinner"):
+        start = db.setting(f"slot.{slot}.start", "06:30")
+        end = db.setting(f"slot.{slot}.end", "20:00")
+        out[slot] = (start, end)
+    out["snack"] = ("00:00", "23:59")
+    return out
+
+
+def _now_hhmm() -> str:
+    return datetime.now().strftime("%H:%M")
+
+
+def meal_timeline(date: str) -> list[dict]:
+    """今天每一餐的状态：已记录 / 已错过 / 待安排。"""
+    profile = db.query_one("SELECT * FROM profiles WHERE user_id = 1") or {}
+    metrics = nutrition.profile_metrics(profile)
+    windows = meal_windows()
+    now = _now_hhmm()
+    is_today = date == db.today()
+    records = {
+        r["meal_index"]: r for r in db.query(
+            "SELECT * FROM meal_records WHERE user_id = 1 AND date = ?", (date,))
+    }
+
+    timeline = []
+    for meal in metrics["meals"]:
+        idx = meal["index"]
+        slot = meal["slot"]
+        start, end = windows.get(slot, ("00:00", "23:59"))
+        record = records.get(idx)
+        recorded = bool(record and record["status"] in ("confirmed", "manual"))
+        passed = is_today and now > end
+        is_now = start <= now <= end
+
+        if recorded:
+            status = "recorded"
+        elif passed:
+            status = "missed"
+        else:
+            status = "planned"
+
+        timeline.append({
+            "meal_index": idx,
+            "meal_name": meal["name"],
+            "slot": slot,
+            "slot_label": nutrition.SLOT_LABELS.get(slot, meal["name"]),
+            "share": meal["share"],
+            "window": f"{start}-{end}",
+            "status": status,
+            "is_now": is_now,
+            "recorded_items": json.loads(record["items_json"]) if record else [],
+            "recorded_kcal": record["kcal"] if record else 0,
+        })
+    return timeline
+
+
+def _pick_weighted(candidates: list[dict], rng: random.Random, k: int = 5) -> Optional[dict]:
+    """在分数最高的 k 个候选里按 score^4 加权抽一个（保证刷新能换内容）。"""
+    top = candidates[:k]
+    if not top:
+        return None
+    weights = [max(0.02, c["scores"]["total"]) ** 4 for c in top]
+    roll = rng.random() * sum(weights)
+    acc = 0.0
+    for cand, weight in zip(top, weights):
+        acc += weight
+        if acc >= roll:
+            return cand
+    return top[-1]
+
+
+def _plan_meal_block(meal: dict, target: dict, items: list[dict], pinned: bool,
+                     status: str, rng: random.Random) -> dict:
+    if items:
+        scored = score_bundle(items, target)
+        return {
+            **meal,
+            "status": status,
+            "pinned": pinned,
+            "items": items,
+            "totals": scored["totals"],
+            "scores": scored["scores"],
+            "evaluation": scored["evaluation"],
+            "macro_pct": scored["macro_pct"],
+            "advice": scored["advice"],
+            "target": target,
+        }
+    return {
+        **meal,
+        "status": status,
+        "pinned": pinned,
+        "items": [],
+        "totals": {"kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "price": 0},
+        "scores": {"total": 0},
+        "evaluation": {},
+        "macro_pct": {"protein": 0, "fat": 0, "carbs": 0},
+        "advice": ["这个时段暂时凑不出合适的组合，可到「搜索」页自己挑，或用自选评估看看推荐度"],
+        "target": target,
+    }
+
+
+def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dict]]] = None,
+                   seed: int = 0, include_passed: bool = False) -> dict:
+    """生成今天的整日用餐计划。
+
+    * 只安排「还没记录、且时间还没过」的餐次；已过时段且没记录的算"错过"（除非 include_passed）
+    * 已被用户固定的餐次原样保留，其余餐次围绕它重新分配剩余额度
+    """
+    date = date or db.today()
+    profile = db.query_one("SELECT * FROM profiles WHERE user_id = 1") or {}
+    metrics = nutrition.profile_metrics(profile)
+    daily = metrics["daily"]
+    consumed = consumed_today(date)
+    dishes = load_dishes()
+    timeline = meal_timeline(date)
+
+    pins = pins or {}
+    remaining = [
+        meal for meal in timeline
+        if meal["status"] == "planned"
+        or (include_passed and meal["status"] == "missed")
+    ]
+    total_share = sum(meal["share"] for meal in remaining) or 1.0
+
+    # 今日剩余额度（扣掉已经吃掉的）
+    avail = {
+        key: max(0.0, float(daily[key]) - float(consumed[key]))
+        for key in ("kcal", "protein", "fat", "carbs")
+    }
+    planned_totals = {"kcal": 0.0, "protein": 0.0, "fat": 0.0, "carbs": 0.0, "price": 0.0}
+
+    rng = random.Random(f"{date}-day-{seed}")
+    blocks: list[dict] = []
+    for meal in timeline:
+        idx = meal["meal_index"]
+        if meal["status"] == "recorded":
+            blocks.append(_plan_meal_block(
+                meal, {"kcal": meal["recorded_kcal"]}, meal["recorded_items"], False,
+                "recorded", rng))
+            continue
+        if meal["status"] == "missed" and not include_passed:
+            blocks.append(_plan_meal_block(meal, {"kcal": 0}, [], False, "missed", rng))
+            continue
+
+        # 本餐目标：剩余额度 × 本餐在"剩余餐次"中的占比
+        left_shares = sum(m["share"] for m in remaining
+                          if m["meal_index"] >= idx) or total_share
+        target = {}
+        for key in ("kcal", "protein", "fat", "carbs"):
+            left = max(0.0, avail[key] - planned_totals[key])
+            target[key] = round(left * meal["share"] / left_shares, 1)
+        target["kcal"] = max(200.0, target["kcal"])
+        target.update({
+            "slot": meal["slot"],
+            "meal_name": meal["meal_name"],
+            "meal_index": idx,
+            "share": meal["share"],
+        })
+
+        if idx in pins and pins[idx]:
+            items = pins[idx]
+            block = _plan_meal_block(meal, target, items, True, "planned", rng)
+        else:
+            candidates = candidate_plans(meal["slot"], target, dishes)
+            chosen = _pick_weighted(candidates, rng)
+            items = chosen["items"] if chosen else []
+            block = _plan_meal_block(meal, target, items, False, "planned", rng)
+
+        for key in ("kcal", "protein", "fat", "carbs", "price"):
+            planned_totals[key] += float(block["totals"].get(key) or 0)
+        blocks.append(block)
+
+    planned_kcal = sum(b["totals"]["kcal"] for b in blocks if b["status"] in ("planned", "recorded"))
+    today_planned = [b for b in blocks if b["status"] in ("planned", "recorded")]
+    signature = [
+        [m["meal_index"] for m in timeline if m["status"] == "recorded"],
+        [m["meal_index"] for m in timeline if m["status"] == "missed"],
+        bool(include_passed),
+    ]
+
+    return {
+        "date": date,
+        "now": _now_hhmm(),
+        "seed": seed,
+        "include_passed": bool(include_passed),
+        "signature": signature,
+        "daily": daily,
+        "consumed": consumed,
+        "meals": blocks,
+        "remaining_indices": [b["meal_index"] for b in blocks if b["status"] == "planned"],
+        "recorded_indices": [b["meal_index"] for b in blocks if b["status"] == "recorded"],
+        "missed_indices": [b["meal_index"] for b in blocks if b["status"] == "missed"],
+        "planned_kcal": round(planned_kcal, 1),
+        "summary": {
+            "meals_total": len(blocks),
+            "meals_remaining": len([b for b in blocks if b["status"] == "planned"]),
+            "meals_recorded": len([b for b in blocks if b["status"] == "recorded"]),
+            "meals_missed": len([b for b in blocks if b["status"] == "missed"]),
+            "plan_kcal": round(planned_kcal, 1),
+            "plan_protein": round(sum(b["totals"]["protein"] for b in today_planned), 1),
+            "plan_fat": round(sum(b["totals"]["fat"] for b in today_planned), 1),
+            "plan_carbs": round(sum(b["totals"]["carbs"] for b in today_planned), 1),
+            "plan_price": round(sum(b["totals"]["price"] for b in today_planned), 1),
+            "gap_kcal": round(daily["kcal"] - planned_kcal, 1),
+            "coverage": round(planned_kcal / daily["kcal"], 3) if daily["kcal"] else 0,
+        },
+    }
+
+
+def _load_plan_row(date: str) -> Optional[dict]:
+    row = db.query_one(
+        "SELECT data_json FROM day_plans WHERE user_id = 1 AND date = ?", (date,))
+    if not row:
+        return None
+    try:
+        return json.loads(row["data_json"])
+    except json.JSONDecodeError:
+        return None
+
+
+def _save_plan_row(date: str, data: dict) -> None:
+    db.execute(
+        "INSERT INTO day_plans (user_id, date, data_json, updated_at) VALUES (1, ?, ?, ?) "
+        "ON CONFLICT(user_id, date) DO UPDATE SET data_json = excluded.data_json, "
+        "updated_at = excluded.updated_at",
+        (date, json.dumps(data, ensure_ascii=False), db.now()),
+    )
+
+
+def _pins_from(plan: dict) -> dict[int, list[dict]]:
+    return {b["meal_index"]: b["items"] for b in plan.get("meals", []) if b.get("pinned")}
+
+
+def get_day_plan(date: Optional[str] = None, refresh: bool = False,
+                 include_passed: Optional[bool] = None,
+                 pin: Optional[tuple[int, bool]] = None,
+                 only_meal: Optional[int] = None) -> dict:
+    """读取 / 维护今日计划。
+
+    * 普通读取：返回已存的计划；若"已记录/已错过"的餐次变了（例如刚确认了一餐），
+      自动按新的剩余餐次重建，同时保留用户固定的餐次
+    * refresh=True：保留固定的餐次，其余重新抽一轮
+    * pin=(meal_index, True/False)：只切换"固定"标记，不改变当前已选内容
+    * only_meal=meal_index：只换这一餐，其余餐次全部临时锁定（"换这道餐"按钮用）
+    """
+    date = date or db.today()
+    stored = _load_plan_row(date)
+
+    if include_passed is None:
+        include_passed = bool(stored.get("include_passed")) if stored else False
+
+    pins: dict[int, list[dict]] = dict(_pins_from(stored)) if stored else {}
+
+    if only_meal is not None:
+        if stored is None:
+            raise ValueError("还没有今日计划，没法单独替换某一餐")
+        blocks = {b["meal_index"]: b for b in stored.get("meals", [])}
+        if only_meal not in blocks:
+            raise ValueError("这一餐不在今日计划里")
+        pins = {b["meal_index"]: b["items"] for b in stored.get("meals", [])
+                if b.get("items") and b["meal_index"] != only_meal
+                and b["status"] in ("planned", "missed")}
+        refresh = True
+
+    pin_changed = False
+    if stored is not None and pin is not None:
+        meal_index, pinned = pin
+        blocks = {b["meal_index"]: b for b in stored.get("meals", [])}
+        block = blocks.get(meal_index)
+        if block is None:
+            raise ValueError("这一餐不在今日计划里（可能已经记录或时段已过）")
+        if pinned:
+            if not block.get("items"):
+                raise ValueError("这一餐还没有推荐内容，无法固定")
+            pins[meal_index] = block["items"]
+        else:
+            pins.pop(meal_index, None)
+        for b in stored.get("meals", []):
+            if b["meal_index"] == meal_index:
+                b["pinned"] = bool(pinned)
+        pin_changed = True
+
+        if not refresh and include_passed == bool(stored.get("include_passed")):
+            _save_plan_row(date, stored)
+            return stored
+
+    need_rebuild = stored is None or refresh
+
+    if stored is not None and not need_rebuild and not pin_changed:
+        timeline_now = meal_timeline(date)
+        current_sig = [
+            [m["meal_index"] for m in timeline_now if m["status"] == "recorded"],
+            [m["meal_index"] for m in timeline_now if m["status"] == "missed"],
+            bool(stored.get("include_passed")),
+        ]
+        if current_sig != stored.get("signature"):
+            need_rebuild = True
+
+    if include_passed is not None and stored is not None \
+            and bool(include_passed) != bool(stored.get("include_passed")):
+        need_rebuild = True
+
+    if need_rebuild:
+        seed = int((stored or {}).get("seed") or 0) + 1 if (stored and (refresh or pin_changed)) else 0
+        data = build_day_plan(date, pins=pins, seed=seed,
+                             include_passed=bool(include_passed))
+        _save_plan_row(date, data)
+        return data
+
+    return stored

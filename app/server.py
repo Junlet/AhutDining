@@ -412,6 +412,54 @@ def handle_settings(body: dict):
     return ok({"changed": changed, "settings": settings})
 
 
+def handle_day_plan(query: dict):
+    date = (query.get("date") or [db.today()])[0]
+    include_passed = None
+    if "include_passed" in query:
+        include_passed = (query.get("include_passed") or ["0"])[0] in ("1", "true", "yes")
+    refresh = (query.get("refresh") or ["0"])[0] in ("1", "true", "yes")
+    data = recommender.get_day_plan(date, refresh=refresh, include_passed=include_passed)
+    data["slot_info"] = recommender.current_slot()
+    return ok(data)
+
+
+def handle_day_plan_refresh(body: dict):
+    date = body.get("date") or db.today()
+    include_passed = body.get("include_passed")
+    only_meal = body.get("only_meal")
+    try:
+        data = recommender.get_day_plan(
+            date, refresh=True,
+            include_passed=None if include_passed is None else bool(include_passed),
+            only_meal=int(only_meal) if only_meal else None)
+    except ValueError as exc:
+        return fail(str(exc))
+    data["slot_info"] = recommender.current_slot()
+    return ok(data)
+
+
+def handle_day_plan_pin(body: dict):
+    date = body.get("date") or db.today()
+    meal_index = int(body.get("meal_index") or 0)
+    if not meal_index:
+        return fail("缺少 meal_index")
+    pinned = bool(body.get("pinned"))
+    try:
+        data = recommender.get_day_plan(date, pin=(meal_index, pinned))
+    except ValueError as exc:
+        return fail(str(exc))
+    data["slot_info"] = recommender.current_slot()
+    return ok(data)
+
+
+def handle_day_plan_reset(body: dict):
+    date = body.get("date") or db.today()
+    db.execute("DELETE FROM day_plans WHERE user_id = 1 AND date = ?", (date,))
+    data = recommender.get_day_plan(date, include_passed=False)
+    data["slot_info"] = recommender.current_slot()
+    return ok(data)
+
+
 def handle_stats():
     date = db.today()
     records = meal_slots(date)
@@ -449,6 +497,10 @@ ROUTES: list[Route] = [
     ("GET", r"^/api/plans$", lambda req, m, q, b: handle_plans_current(q)),
     ("POST", r"^/api/plans/refresh$", lambda req, m, q, b: handle_plans_refresh(b)),
     ("POST", r"^/api/plans/evaluate$", lambda req, m, q, b: handle_plans_evaluate(b)),
+    ("GET", r"^/api/day-plan$", lambda req, m, q, b: handle_day_plan(q)),
+    ("POST", r"^/api/day-plan/refresh$", lambda req, m, q, b: handle_day_plan_refresh(b)),
+    ("POST", r"^/api/day-plan/pin$", lambda req, m, q, b: handle_day_plan_pin(b)),
+    ("POST", r"^/api/day-plan/reset$", lambda req, m, q, b: handle_day_plan_reset(b)),
     ("GET", r"^/api/dishes$", lambda req, m, q, b: handle_dishes(q)),
     ("GET", r"^/api/dishes/(?P<id>\d+)$", lambda req, m, q, b: handle_dish_detail(int(m["id"]))),
     ("POST", r"^/api/comments$", lambda req, m, q, b: handle_add_comment(b)),
@@ -592,9 +644,13 @@ def pick_port(preferred: int = 8848) -> int:
 
 def serve(port: Optional[int] = None) -> ThreadingHTTPServer:
     bootstrap_data()
-    port = port or int(os.environ.get("AHUT_PORT") or 0) or pick_port()
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    return httpd
+    wanted = port or int(os.environ.get("AHUT_PORT") or 0)
+    if wanted:
+        try:
+            return ThreadingHTTPServer(("127.0.0.1", wanted), Handler)
+        except OSError:
+            print(f"[提示] 端口 {wanted} 已被占用，自动换一个端口")
+    return ThreadingHTTPServer(("127.0.0.1", pick_port()), Handler)
 
 
 if __name__ == "__main__":

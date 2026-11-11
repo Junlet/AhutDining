@@ -100,6 +100,21 @@ async function test(name, fn) {
     }
   });
 
+  await test('今日计划字段', async () => {
+    const plan = await get('/api/day-plan?include_passed=1');
+    ['now', 'daily.kcal', 'summary.meals_remaining', 'summary.meals_total',
+      'summary.plan_kcal', 'summary.plan_protein', 'summary.plan_fat', 'summary.plan_carbs',
+      'summary.plan_price', 'summary.coverage', 'summary.gap_kcal'].forEach((p) => need(plan, p));
+    if (!plan.meals.length) throw new Error('meals 为空');
+    const meal = plan.meals[0];
+    ['meal_name', 'window', 'status', 'pinned', 'target.kcal', 'totals.kcal',
+      'totals.price', 'macro_pct.protein', 'advice', 'scores.total'].forEach((p) => need(meal, p));
+    if (!Array.isArray(meal.items)) throw new Error('items 不是数组');
+    const planned = plan.meals.find((m) => m.status === 'planned' && m.items.length);
+    if (planned) need(planned, 'items.0.dish_id');
+    if (!Array.isArray(plan.remaining_indices)) throw new Error('remaining_indices 不是数组');
+  });
+
   await test('统计字段', async () => {
     const stats = await get('/api/stats');
     need(stats, 'remaining.kcal');

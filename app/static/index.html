@@ -17,6 +17,7 @@
   </div>
   <nav class="tabs" id="tabs">
     <button class="tab active" data-tab="home">推荐</button>
+    <button class="tab" data-tab="day">今日计划</button>
     <button class="tab" data-tab="search">搜索</button>
     <button class="tab" data-tab="custom">自选评估</button>
     <button class="tab" data-tab="records">用餐记录</button>
@@ -42,6 +43,25 @@
     </div>
     <div class="targets" id="home-targets"></div>
     <div class="cards" id="plan-list"></div>
+  </section>
+
+  <!-- 今日用餐计划 -->
+  <section class="panel" id="panel-day">
+    <div class="row between center wrap">
+      <div>
+        <h2>今日用餐计划</h2>
+        <p class="muted" id="day-hint">正在按当前时间计算今天还剩几餐…</p>
+      </div>
+      <div class="row gap wrap">
+        <label class="muted" style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" id="day-include-passed"> 包含已过时段
+        </label>
+        <button class="btn" id="btn-day-reset">重置计划</button>
+        <button class="btn primary" id="btn-day-refresh">刷新未固定的餐</button>
+      </div>
+    </div>
+    <div class="targets" id="day-summary"></div>
+    <div class="records" id="day-meals"></div>
   </section>
 
   <!-- 搜索 -->

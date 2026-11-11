@@ -1,4 +1,4 @@
-"""接口冒烟测试：不依赖第三方库，直接用 urllib 打本机服务。
+﻿"""接口冒烟测试：不依赖第三方库，直接用 urllib 打本机服务。
 
 用法（服务已启动后）：
     python tests/smoke_test.py            # 默认 http://127.0.0.1:8848
@@ -197,6 +197,90 @@ def test_settings_and_stats() -> None:
     assert slot["slot"] in ("breakfast", "lunch", "dinner")
 
 
+
+
+def _meals_per_day() -> int:
+    return call("GET", "/api/profile")["metrics"]["meals_per_day"]
+
+
+def test_day_plan_basic() -> None:
+    data = call("GET", "/api/day-plan?include_passed=1")
+    assert len(data["meals"]) == _meals_per_day(), "整日计划的餐次数与每日餐数不一致"
+    assert data["summary"]["meals_remaining"] >= 1
+    for meal in data["meals"]:
+        assert meal["status"] in ("planned", "recorded", "missed")
+        assert meal["window"]
+        if meal["status"] == "planned":
+            assert meal["items"], meal["meal_name"]
+            assert meal["target"]["kcal"] > 0
+    assert data["summary"]["plan_kcal"] > 500
+
+
+def test_day_plan_time_filter() -> None:
+    data = call("GET", "/api/day-plan?include_passed=0")
+    for meal in data["meals"]:
+        assert meal["status"] in ("planned", "recorded", "missed")
+        if meal["status"] == "missed":
+            assert not meal["items"], "已错过的餐次不该有推荐内容"
+    summary = data["summary"]
+    assert summary["meals_remaining"] + summary["meals_recorded"] \
+        + summary["meals_missed"] == len(data["meals"])
+
+
+def test_day_plan_pin_and_refresh() -> None:
+    plan = call("GET", "/api/day-plan?include_passed=1")
+    planned = [m for m in plan["meals"] if m["status"] == "planned"]
+    assert len(planned) >= 2, "至少两餐才能验证固定后刷新"
+    target = planned[0]
+    pinned_ids = [i["dish_id"] for i in target["items"]]
+    after_pin = call("POST", "/api/day-plan/pin",
+                     {"meal_index": target["meal_index"], "pinned": True})
+    block = next(m for m in after_pin["meals"] if m["meal_index"] == target["meal_index"])
+    assert block["pinned"] is True
+    refreshed = call("POST", "/api/day-plan/refresh", {"include_passed": True})
+    block2 = next(m for m in refreshed["meals"] if m["meal_index"] == target["meal_index"])
+    assert [i["dish_id"] for i in block2["items"]] == pinned_ids, "固定餐次被改掉了"
+
+
+def test_day_plan_only_meal() -> None:
+    plan = call("GET", "/api/day-plan?include_passed=1")
+    planned = [m for m in plan["meals"] if m["status"] == "planned" and m["items"]]
+    assert len(planned) >= 2
+    keep = {m["meal_index"]: [i["dish_id"] for i in m["items"]] for m in planned}
+    change_index = planned[0]["meal_index"]
+    swapped = call("POST", "/api/day-plan/refresh",
+                   {"only_meal": change_index, "include_passed": True})
+    for meal in swapped["meals"]:
+        idx = meal["meal_index"]
+        if idx in keep and idx != change_index and meal["status"] == "planned":
+            assert [i["dish_id"] for i in meal["items"]] == keep[idx], "「换这道餐」改动了其它餐"
+
+
+def test_day_plan_confirm_effect() -> None:
+    plan = call("GET", "/api/day-plan?include_passed=1")
+    planned = [m for m in plan["meals"] if m["status"] == "planned" and m["items"]]
+    assert planned
+    target = planned[-1]
+    call("POST", "/api/records/confirm", {
+        "date": plan["date"],
+        "meal_index": target["meal_index"],
+        "items": [{"dish_id": i["dish_id"]} for i in target["items"]],
+        "status": "confirmed",
+    })
+    after = call("GET", "/api/day-plan?include_passed=1")
+    block = next(m for m in after["meals"] if m["meal_index"] == target["meal_index"])
+    assert block["status"] == "recorded", "确认后该餐应变成已记录"
+    assert after["summary"]["meals_recorded"] >= 1
+    call("DELETE", f"/api/records/{plan['date']}/{target['meal_index']}")
+    call("POST", "/api/day-plan/reset", {})
+
+
+def test_day_plan_reset() -> None:
+    data = call("POST", "/api/day-plan/reset", {})
+    assert data["include_passed"] is False
+    assert all(not m["pinned"] for m in data["meals"]), "重置后不应残留固定项"
+
+
 STATE: dict = {}
 
 for name, fn in [
@@ -213,6 +297,12 @@ for name, fn in [
     ("手动补记与清空", test_manual_record_and_clear),
     ("修改资料联动餐次", test_profile_update),
     ("设置与统计", test_settings_and_stats),
+    ("今日计划·整日推荐", test_day_plan_basic),
+    ("今日计划·时间过滤", test_day_plan_time_filter),
+    ("今日计划·固定与刷新", test_day_plan_pin_and_refresh),
+    ("今日计划·单餐替换", test_day_plan_only_meal),
+    ("今日计划·确认联动", test_day_plan_confirm_effect),
+    ("今日计划·重置", test_day_plan_reset),
 ]:
     check(name, fn)
 

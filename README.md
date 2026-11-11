@@ -30,6 +30,7 @@ python run.py
 | 营养目标 | 按 AMDR 拆成蛋白/脂肪/碳水克数，并给出每餐拆分（默认三餐 30/40/30） |
 | 菜品评分 | 每道菜单独算蛋白质分、脂肪分、碳水（碳水占比）分 + 综合营养分 |
 | 套餐推荐 | 各食堂枚举「主食+荤+素(+汤)」组合 → 按热量/蛋白/脂肪/碳水/多样性/口味/价格打分 → 一次 6 套，可无限换批 |
+| 今日用餐计划 | 按当前时间点判断今天还剩几餐（已记录的、已错过的自动剔除），把剩下的餐**一整天地一起推荐**；可「固定这餐」后再刷新，只换其它餐次 |
 | 用餐记录 | 确认推荐即记录；忘记确认可事后手动补记；栏位数随「每天几餐」变化 |
 | 自选评估 | 自助类（麻辣烫、称重快餐）自己勾选，给出推荐度与改进建议 |
 | 搜索 / 收藏 / 评论 | 按菜名、标签、食堂、分类搜索；收藏；对菜品打星+写评论（可删） |
@@ -99,6 +100,10 @@ python tools/import_dishes.py --file 真实菜单.csv --replace   # 导入真实
 | GET | `/api/plans?slot=lunch` | 取某时段推荐批次 |
 | POST | `/api/plans/refresh` | 换一批推荐 |
 | POST | `/api/plans/evaluate` | 自选菜品评分（推荐度） |
+| GET | `/api/day-plan?include_passed=0/1` | 今日用餐计划（剩余餐次 + 整日方案） |
+| POST | `/api/day-plan/refresh` | 刷新未固定的餐（可传 `only_meal` 只换一餐） |
+| POST | `/api/day-plan/pin` | 固定 / 取消固定某一餐 |
+| POST | `/api/day-plan/reset` | 重置今日计划（清固定项） |
 | GET | `/api/dishes?q=&canteen=&category=&sort=` | 搜索/筛选菜品 |
 | GET | `/api/dishes/{id}` | 菜品详情（评分、评论、图片、比价） |
 | POST | `/api/comments`、DELETE `/api/comments/{id}` | 评论增删 |
