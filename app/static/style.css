@@ -246,3 +246,32 @@ table.cmp th { color: var(--ink-2); font-weight: 500; }
 .level-good { background: var(--green-soft); color: var(--green); }
 .level-mid { background: #fdf3e1; color: var(--amber); }
 .level-bad { background: #fdecec; color: var(--red); }
+
+/* ── 搜索页 + 购物车 ─────────────────────────────────── */
+.search-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 1100px) { .search-layout { grid-template-columns: 1fr; } }
+
+.cart-panel {
+  position: sticky;
+  top: 84px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px;
+}
+.cart-panel h2 { font-size: 17px; }
+.cart-slot-label { display: block; font-size: 13px; color: var(--ink-2); margin: 8px 0; }
+.cart-slot-label .select { width: 100%; margin-top: 4px; }
+.cart-items { max-height: 300px; overflow: auto; border-top: 1px dashed var(--line); }
+.cart-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 0; border-bottom: 1px dashed var(--line);
+}
+.cart-row:last-child { border-bottom: none; }
+.cart-empty { padding: 14px 4px; color: var(--ink-2); font-size: 13px; }

@@ -306,6 +306,7 @@ def handle_add_comment(body: dict):
         return fail("缺少 dish_id")
     if not content:
         return fail("评论内容不能为空")
+    recommender.invalidate_cache()
     comment_id = db.execute(
         "INSERT INTO comments (user_id, dish_id, rating, content, created_at, updated_at) "
         "VALUES (1, ?, ?, ?, ?, ?)",
@@ -316,10 +317,12 @@ def handle_add_comment(body: dict):
 
 def handle_delete_comment(comment_id: int):
     db.execute("DELETE FROM comments WHERE id = ? AND user_id = 1", (comment_id,))
+    recommender.invalidate_cache()
     return ok({"deleted": comment_id})
 
 
 def handle_toggle_favorite(dish_id: int):
+    recommender.invalidate_cache()
     row = db.query_one("SELECT 1 AS x FROM favorites WHERE user_id = 1 AND dish_id = ?", (dish_id,))
     if row:
         db.execute("DELETE FROM favorites WHERE user_id = 1 AND dish_id = ?", (dish_id,))
@@ -368,6 +371,7 @@ def handle_upload_image(body: dict):
     stored = f"{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:10]}{ext}"
     with open(os.path.join(db.MEDIA_DIR, stored), "wb") as fh:
         fh.write(raw)
+    recommender.invalidate_cache()
     image_id = db.execute(
         "INSERT INTO images (owner_type, owner_id, path, created_at) VALUES (?, ?, ?, ?)",
         (owner_type, owner_id, stored, db.now()),

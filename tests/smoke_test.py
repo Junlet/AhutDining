@@ -1,4 +1,4 @@
-"""接口冒烟测试：不依赖第三方库，直接用 urllib 打本机服务。
+﻿"""接口冒烟测试：不依赖第三方库，直接用 urllib 打本机服务。
 
 用法（服务已启动后）：
     python tests/smoke_test.py            # 默认 http://127.0.0.1:8848
@@ -439,6 +439,19 @@ def test_day_plan_manual_flow() -> None:
     call("POST", "/api/day-plan/reset", {})
 
 
+
+def test_cart_day_evaluation() -> None:
+    """购物车按「全天合计」评估：target 应是整日额度而不是单餐。"""
+    dishes = call("GET", "/api/dishes?sort=score&limit=3")["items"]
+    assert len(dishes) == 3
+    single = call("POST", "/api/plans/evaluate",
+                  {"dish_ids": [dishes[0]["dish_id"]], "slot": "lunch"})
+    day = call("POST", "/api/plans/evaluate",
+               {"dish_ids": [d["dish_id"] for d in dishes], "slot": "day"})
+    assert day["target"]["slot"] == "day"
+    assert day["target"]["kcal"] > single["target"]["kcal"], "全天目标应大于单餐目标"
+    assert day["recommend_level"] in ("强烈推荐", "推荐", "一般", "不推荐")
+    assert day["advice"]
 def test_day_plan_confirm_effect() -> None:
     state = _ensure_chosen()
     planned = [m for m in state["plan"]["meals"] if m["status"] == "planned" and m["items"]]
@@ -488,6 +501,7 @@ for name, fn in [
     ("今日计划·单餐刷新", test_day_plan_only_meal),
     ("今日计划·自选菜替换并补齐", test_day_plan_set_meal),
     ("今日计划·手动多选一餐", test_day_plan_manual_pick),
+    ("购物车·全天评估", test_cart_day_evaluation),
     ("今日计划·手动选择补记/计划并确认", test_day_plan_manual_flow),
     ("今日计划·确认联动", test_day_plan_confirm_effect),
     ("今日计划·重置", test_day_plan_reset),

@@ -172,7 +172,17 @@ function check(name, fn) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 (async () => {
-  await sleep(2600);
+  // 首次生成方案需要 1~3 秒（2600+ 道菜），这里最多等 15 秒
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    const ready = (byId['todaybar'] && String(byId['todaybar']._html || '').includes('今日目标'))
+      && (byId['plan-list'] && byId['plan-list'].children.length > 0
+        || (byId['home-day-options'] && byId['home-day-options'].children.length > 0)
+        || (byId['day-hint'] && String(byId['day-hint'].textContent || byId['day-hint']._html || '').length > 0));
+    if (ready && !fatal) break;
+    await sleep(250);
+  }
+  await sleep(400);
   let pass = 0;
   let fail = 0;
   const run = (name, fn) => { if (check(name, fn)) pass++; else fail++; };
@@ -256,9 +266,36 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       'renderHomeDay', 'renderDayTab', 'dayMealCard', 'openMealPicker',
       'openRecordEditor', 'pickMealForDish', 'applySetMeal', 'confirmDayMeal',
       'refreshDayPlan', 'reselectDayPlan', 'chooseDayOption', 'renderModeSettings',
-      'commitManualPlan', 'openMealPicker'];
+      'commitManualPlan', 'openMealPicker',
+      'addToCart', 'renderCart', 'evaluateCart', 'applyCartToPlan', 'clearCart'];
     const missing = required.filter((name) => typeof sandbox[name] !== 'function');
     if (missing.length) throw new Error(`未定义：${missing.join(', ')}`);
+  });
+
+  run('搜索筛选改变后自动搜索（无需点按钮）', () => {
+    const box = byId['search-list'];
+    const before = box ? box.children.length : 0;
+    const fns = listeners['search-canteen:change'] || [];
+    if (!fns.length) throw new Error('食堂筛选没有绑定 change 事件');
+    fns.forEach((fn) => fn({ target: getEl('search-canteen') }));
+    if (before === 0 && box && box.children.length === 0 && !htmlWrites['search-hint']) {
+      throw new Error('改变筛选后没有触发搜索（列表与提示都没更新）');
+    }
+  });
+
+  run('购物车能加菜并显示合计', () => {
+    if (typeof sandbox.addToCart !== 'function') throw new Error('缺少 addToCart');
+    sandbox.addToCart({
+      dish_id: 999001, name: '测试菜', canteen: '一食堂', window: '测试窗口',
+      price: 8, kcal: 400, protein: 20, fat: 10, carbs: 50,
+    });
+    const summary = byId['cart-summary'];
+    if (!summary || !String(summary._html).includes('已选')) {
+      throw new Error('购物车合计没有渲染');
+    }
+    if (!String(summary._html).includes('400')) throw new Error('购物车合计热量不对');
+    sandbox.clearCart();
+    if (String(byId['cart-summary']._html).includes('已选 1')) throw new Error('清空没生效');
   });
 
   run('设置页有推荐模式选项', () => {

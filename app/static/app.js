@@ -7,7 +7,8 @@ const state = {
   batch: 1,
   date: '',
   recordDate: '',
-  customSelected: new Map(), // dish_id -> dish
+  cart: new Map(),           // 购物车：dish_id -> dish
+  customSelected: new Map(), // 兼容旧字段（已不用）
   customSlot: 'lunch',
   lastSlotKey: '',
   dayDate: '',        // 「今日」页正在看的日期
@@ -93,11 +94,19 @@ async function init() {
   document.getElementById('btn-day-fill-rest').addEventListener('click', fillRemainingMeals);
   document.getElementById('day-include-passed').addEventListener('change', loadDayPlan);
   document.getElementById('btn-search').addEventListener('click', runSearch);
+  ['search-canteen', 'search-category', 'search-sort'].forEach((id) => {
+    document.getElementById(id).addEventListener('change', runSearch);
+  });
+  document.getElementById('cart-slot').addEventListener('change', () => {
+    const box = document.getElementById('cart-result');
+    if (box) box.innerHTML = '';
+  });
+  document.getElementById('btn-cart-evaluate').addEventListener('click', evaluateCart);
+  document.getElementById('btn-cart-apply').addEventListener('click', applyCartToPlan);
+  document.getElementById('btn-cart-clear').addEventListener('click', clearCart);
   document.getElementById('search-q').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') runSearch();
   });
-  document.getElementById('btn-evaluate').addEventListener('click', evaluateCustom);
-  document.getElementById('custom-q').addEventListener('input', renderPickList);
   document.getElementById('btn-home-day-refresh').addEventListener('click', refreshHomeDay);
   document.getElementById('btn-home-day-go').addEventListener('click', () => switchTab('day'));
   document.getElementById('btn-day-today').addEventListener('click', () => {
@@ -151,7 +160,7 @@ async function loadBootstrap() {
   await step('今日计划', loadDayPlan);
   await step('用餐记录', loadRecords);
   await step('收藏', loadFavorites);
-  await step('菜品选择', renderPickList);
+  await step('购物车', () => renderCart());
 }
 
 function renderTodaybar() {
@@ -432,13 +441,13 @@ function dishCard(item) {
         <span class="badge grey">碳水 ${pct(item.scores.shares.carbs)}</span>
       </div>
       <div class="card-actions">
-        <button class="btn grow" data-act="detail">查看详情 / 评论</button>
-        <button class="btn" data-act="pick">选为这一餐</button>
+        <button class="btn primary grow" data-act="cart">加入购物车</button>
+        <button class="btn" data-act="detail">详情 / 评论</button>
         <button class="btn" data-act="fav">${item.favorite ? '取消收藏' : '收藏'}</button>
       </div>
     </div>`);
+  card.querySelector('[data-act="cart"]').addEventListener('click', () => addToCart(item));
   card.querySelector('[data-act="detail"]').addEventListener('click', () => openDish(item.dish_id));
-  card.querySelector('[data-act="pick"]').addEventListener('click', () => pickMealForDish(item.dish_id));
   card.querySelector('[data-act="fav"]').addEventListener('click', async (e) => {
     const res = await api(`/api/favorites/${item.dish_id}`, { method: 'POST' });
     item.favorite = res.favorite;
@@ -449,61 +458,116 @@ function dishCard(item) {
   return card;
 }
 
-/* ── 自选评估（需求 8） ─────────────────────────────────────── */
-async function renderPickList() {
-  const q = (document.getElementById('custom-q').value || '').trim();
-  const data = await api(`/api/dishes?q=${encodeURIComponent(q)}&sort=score`);
-  const box = document.getElementById('custom-pick');
-  box.innerHTML = '';
-  data.items.slice(0, 80).forEach((item) => {
-    const row = el(`
-      <label class="pick-item">
-        <input type="checkbox" ${state.customSelected.has(item.dish_id) ? 'checked' : ''}>
-        <span class="grow">${item.name}
-          <span class="dish-meta"> · ${item.canteen} · ¥${fmt(item.price, 1)} · ${fmt(item.kcal)} kcal</span></span>
-        <span class="dish-meta">蛋白 ${fmt(item.protein, 1)}g</span>
-      </label>`);
-    const cb = row.querySelector('input');
-    cb.addEventListener('change', () => {
-      if (cb.checked) state.customSelected.set(item.dish_id, item);
-      else state.customSelected.delete(item.dish_id);
-      renderChosen();
-    });
-    box.appendChild(row);
-  });
+/* ── 自选一餐（搜索页购物车） ───────────────────────────────── */
+function cartSlotLabel() {
+  const select = document.getElementById('cart-slot');
+  if (!select) return '午餐';
+  return select.options[select.selectedIndex].textContent;
 }
 
-function renderChosen() {
-  const box = document.getElementById('custom-chosen');
-  document.getElementById('custom-count').textContent = state.customSelected.size;
-  box.innerHTML = '';
-  state.customSelected.forEach((item) => {
-    const chip = el(`<span class="chip">${item.name}<button title="移除">×</button></span>`);
-    chip.querySelector('button').addEventListener('click', () => {
-      state.customSelected.delete(item.dish_id);
-      renderChosen();
-      renderPickList();
-    });
-    box.appendChild(chip);
-  });
+function addToCart(item) {
+  state.cart.set(item.dish_id, item);
+  renderCart();
+  toast(`已加入购物车：${item.name}`);
 }
 
-async function evaluateCustom() {
-  if (!state.customSelected.size) {
-    toast('先勾选几道菜');
+function removeFromCart(dishId) {
+  state.cart.delete(dishId);
+  renderCart();
+}
+
+function clearCart() {
+  state.cart.clear();
+  renderCart();
+  const box = document.getElementById('cart-result');
+  if (box) box.innerHTML = '';
+}
+
+function renderCart() {
+  const list = document.getElementById('cart-items');
+  const summary = document.getElementById('cart-summary');
+  if (!list || !summary) return;
+
+  list.innerHTML = '';
+  if (!state.cart.size) {
+    list.innerHTML = '<div class="cart-empty">购物车是空的：在右侧菜卡上点「加入购物车」</div>';
+  }
+  let kcal = 0, protein = 0, fat = 0, carbs = 0, price = 0;
+  state.cart.forEach((item) => {
+    kcal += Number(item.kcal) || 0;
+    protein += Number(item.protein) || 0;
+    fat += Number(item.fat) || 0;
+    carbs += Number(item.carbs) || 0;
+    price += Number(item.price) || 0;
+    const row = el(`<div class="cart-row">
+      <div class="grow">
+        <div class="dish-name">${item.name}</div>
+        <div class="dish-meta">${item.canteen} · ${item.window} · ¥${fmt(item.price, 1)} · ${fmt(item.kcal)} kcal</div>
+      </div>
+      <div class="dish-meta" style="text-align:right">蛋白 ${fmt(item.protein, 1)}g</div>
+      <button class="btn small" title="移出购物车">×</button>
+    </div>`);
+    row.querySelector('button').addEventListener('click', () => removeFromCart(item.dish_id));
+    list.appendChild(row);
+  });
+
+  summary.innerHTML = `
+    <div class="metric-row"><span>已选</span><span>${state.cart.size} 道 · ¥${fmt(price, 1)}</span></div>
+    <div class="metric-row"><span>合计热量</span><span>${fmt(kcal)} kcal</span></div>
+    <div class="metric-row"><span>蛋白 / 脂肪 / 碳水</span>
+      <span>${fmt(protein, 1)} / ${fmt(fat, 1)} / ${fmt(carbs, 1)} g</span></div>`;
+}
+
+async function evaluateCart() {
+  if (!state.cart.size) {
+    toast('购物车是空的');
     return;
   }
-  const slot = document.getElementById('custom-slot').value;
+  const slot = document.getElementById('cart-slot').value;
   try {
     const data = await api('/api/plans/evaluate', {
       method: 'POST',
-      body: JSON.stringify({ dish_ids: [...state.customSelected.keys()], slot }),
+      body: JSON.stringify({ dish_ids: [...state.cart.keys()], slot }),
     });
-    showEvaluation(data);
+    showEvaluation(data, '#cart-result');
   } catch (err) { toast(err.message); }
 }
 
-function showEvaluation(data, container = '#custom-result') {
+async function applyCartToPlan() {
+  if (!state.cart.size) {
+    toast('购物车是空的');
+    return;
+  }
+  const slot = document.getElementById('cart-slot').value;
+  if (slot === 'day') {
+    toast('「全天合计」只用于评估，替换计划请选具体某一餐');
+    return;
+  }
+  try {
+    const date = (state.boot && state.boot.date) || todayString();
+    const records = await api(`/api/records?date=${date}`);
+    const target = records.records.find((r) => r.slot === slot);
+    if (!target) {
+      toast('这一餐不在今天的餐次里');
+      return;
+    }
+    const data = await api('/api/day-plan/manual-meal', {
+      method: 'POST',
+      body: JSON.stringify({ meal_index: target.meal_index, dish_ids: [...state.cart.keys()] }),
+    });
+    const { saved_as, record_synced, manual_meal, ...rest } = data;
+    state.day = rest;
+    renderHomeDay(rest);
+    renderDayTab(rest);
+    await loadRecords();
+    toast(record_synced
+      ? `已替换${target.meal_name}（已同步记录）`
+      : `已用购物车替换${target.meal_name}，可在「今日」里继续调整`);
+    switchTab('day');
+  } catch (err) { toast(err.message); }
+}
+
+function showEvaluation(data, container = '#cart-result') {
   const levelColor = data.recommend_level === '强烈推荐' ? 'var(--green)'
     : data.recommend_level === '推荐' ? 'var(--green)'
       : data.recommend_level === '一般' ? 'var(--amber)' : 'var(--red)';
@@ -551,10 +615,25 @@ function applyMode(mode) {
 async function loadHome() {
   applyMode(currentMode());
   if (currentMode() === 'day') {
+    if (!state.day) {
+      const hint = document.getElementById('home-day-hint');
+      if (hint) hint.textContent = '正在按当前时间与用餐记录生成 A/B/C 方案…（首次约 1–3 秒）';
+    }
     await loadDayPlan();
   } else {
     await loadPlans();
   }
+}
+
+function busy(button, textWhileBusy) {
+  if (!button) return () => {};
+  const original = button.textContent;
+  button.disabled = true;
+  button.textContent = textWhileBusy;
+  return () => {
+    button.disabled = false;
+    button.textContent = original;
+  };
 }
 
 /* ── 今日计划（A/B/C 方案 → 选定 → 单餐替换/补记） ─────────────── */
@@ -958,6 +1037,7 @@ async function confirmDayMeal(meal, plan) {
 
 async function refreshDayPlan() {
   const includePassed = document.getElementById('day-include-passed').checked;
+  const done = busy(document.getElementById('btn-day-refresh'), '生成中…');
   try {
     const data = await api('/api/day-plan/refresh', {
       method: 'POST',
@@ -971,27 +1051,29 @@ async function refreshDayPlan() {
       const pinned = data.plan.meals.filter((m) => m.pinned).length;
       toast(pinned ? `已刷新，${pinned} 餐固定不变` : '已刷新整日计划');
     }
-  } catch (err) { toast(err.message); }
+  } catch (err) { toast(err.message); } finally { done(); }
 }
 
 async function refreshHomeDay() {
+  const done = busy(document.getElementById('btn-home-day-refresh'), '生成中…');
   try {
     const data = await api('/api/day-plan/refresh', { method: 'POST', body: JSON.stringify({}) });
     state.day = data;
     renderHomeDay(data);
     renderDayTab(data);
     toast(data.stage === 'options' ? '已换一批方案' : '已刷新');
-  } catch (err) { toast(err.message); }
+  } catch (err) { toast(err.message); } finally { done(); }
 }
 
 async function reselectDayPlan() {
+  const done = busy(document.getElementById('btn-day-reselect'), '生成中…');
   try {
     const data = await api('/api/day-plan/reset', { method: 'POST', body: '{}' });
     state.day = data;
     renderHomeDay(data);
     renderDayTab(data);
     toast('已回到方案选择（固定项已清空）');
-  } catch (err) { toast(err.message); }
+  } catch (err) { toast(err.message); } finally { done(); }
 }
 
 async function pickMealForDish(dishId) {
@@ -1672,7 +1754,6 @@ function switchTab(tab) {
     .catch((err) => toast(`今日页加载失败：${err.message}`));
   if (tab === 'search') runSearch();
   if (tab === 'favorites') loadFavorites();
-  if (tab === 'custom') renderPickList();
   if (tab === 'settings') { renderModeSettings(); renderMetrics(); }
 }
 

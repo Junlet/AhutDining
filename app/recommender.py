@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import random
 import re
+import time
 from datetime import datetime
 from typing import Iterable, Optional
 
@@ -20,6 +21,18 @@ import nutrition
 
 # 每个角色最多参与枚举的候选菜数（控制组合爆炸）
 ROLE_TOP_K = 5
+
+# 菜品与候选组合的短缓存：2,600+ 道菜时，重复查询能把 5s 降到几十毫秒
+_DISH_CACHE: dict = {"ts": 0.0, "data": None, "ttl": 20.0}
+_CAND_CACHE: dict = {}
+_CAND_TTL = 60.0
+
+
+def invalidate_cache() -> None:
+    """收藏/评论/图片/菜品变动后调用，清掉短缓存。"""
+    _DISH_CACHE["data"] = None
+    _DISH_CACHE["ts"] = 0.0
+    _CAND_CACHE.clear()
 
 ROLE_RULES = {
     "breakfast": [
@@ -43,8 +56,13 @@ ROLE_RULES = {
 
 
 # ── 取数 ────────────────────────────────────────────────────────────────
-def load_dishes() -> list[dict]:
-    """所有在售菜品 + 窗口/食堂信息 + 单项营养分数 + 口味分。"""
+def load_dishes(force: bool = False) -> list[dict]:
+    """所有在售菜品 + 窗口/食堂信息 + 单项营养分数 + 口味分（带 20 秒短缓存）。"""
+    now = time.time()
+    if (not force and _DISH_CACHE["data"] is not None
+            and now - _DISH_CACHE["ts"] < _DISH_CACHE["ttl"]):
+        return _DISH_CACHE["data"]
+
     rows = db.query(
         """
         SELECT d.*, w.name AS window_name, w.floor, w.open_hours,
@@ -81,6 +99,8 @@ def load_dishes() -> list[dict]:
         row["taste_score"] = round(min(1.0, taste), 3)
         row["is_self_service"] = int(row["is_self_service"])
         row["tags_list"] = [t for t in (row.get("tags") or "").split(",") if t]
+    _DISH_CACHE["ts"] = now
+    _DISH_CACHE["data"] = rows
     return rows
 
 
@@ -406,6 +426,7 @@ def _extend(items: list[dict], pool: list[dict], target: dict,
         return items
 
     chosen = {i["id"] for i in items}
+    used_bases = {_base_name(i["name"]) for i in items}
     best_score = score_bundle(items, target)["scores"]["total"]
     guard = 0
     while len(items) < max_items and _bundle(items)["kcal"] < target_kcal * 0.92 and guard < 10:
@@ -413,6 +434,8 @@ def _extend(items: list[dict], pool: list[dict], target: dict,
         best, best_score_new = None, best_score
         for cand in pool[:limit]:
             if cand["id"] in chosen:
+                continue
+            if _base_name(cand["name"]) in used_bases:
                 continue
             trial = items + [cand]
             score = score_bundle(trial, target)["scores"]["total"]
@@ -423,6 +446,7 @@ def _extend(items: list[dict], pool: list[dict], target: dict,
         items = best
         best_score = best_score_new
         chosen.add(best[-1]["id"])
+        used_bases.add(_base_name(best[-1]["name"]))
     return items
 
 
@@ -434,8 +458,24 @@ def _dedupe_key_plan(plan: dict) -> tuple:
     return tuple(sorted(i["dish_id"] for i in plan["items"]))
 
 
+def _target_key(slot: str, target: dict) -> tuple:
+    return (slot, round(float(target.get("kcal") or 0)),
+            round(float(target.get("protein") or 0)),
+            round(float(target.get("fat") or 0)),
+            round(float(target.get("carbs") or 0)))
+
+
 def candidate_plans(slot: str, target: dict, dishes: list[dict]) -> list[dict]:
-    """枚举某餐次的所有可行组合并打分，按分数降序返回（不含 id/batch 等元数据）。"""
+    """枚举某餐次的所有可行组合并打分，按分数降序返回（不含 id/batch 等元数据）。
+
+    同一目标（同 slot + 同营养素目标）的结果会缓存 60 秒：
+    A/B/C 三套方案共用同一批候选，生成时间从每套 2 秒降到一次 2 秒左右。
+    """
+    key = _target_key(slot, target)
+    hit = _CAND_CACHE.get(key)
+    if hit and time.time() - hit[0] < _CAND_TTL:
+        return hit[1]
+
     by_canteen: dict[int, list[dict]] = {}
     for dish in dishes:
         by_canteen.setdefault(dish["canteen_id"], []).append(dish)
@@ -445,8 +485,8 @@ def candidate_plans(slot: str, target: dict, dishes: list[dict]) -> list[dict]:
 
     for canteen_id, canteen_dishes in by_canteen.items():
         if slot == "breakfast":
-            staples = _role_pool(canteen_dishes, "staple")[:5]
-            drinks = _role_pool(canteen_dishes, "drink")[:3]
+            staples = _role_pool(canteen_dishes, "staple")[:4]
+            drinks = _role_pool(canteen_dishes, "drink")[:2]
             if not staples:
                 continue
             raw_combos = [[s] for s in staples]
@@ -458,10 +498,10 @@ def candidate_plans(slot: str, target: dict, dishes: list[dict]) -> list[dict]:
             raw_combos = [[p] for p in pool] + [[a, b] for a in pool[:2] for b in pool[1:3]
                                                 if a["id"] != b["id"]]
         else:
-            staples = _role_pool(canteen_dishes, "staple")[:4]
-            meats = _role_pool(canteen_dishes, "meat")[:4]
-            greens = (_role_pool(canteen_dishes, "veg") + _role_pool(canteen_dishes, "soup"))[:4]
-            soups = _role_pool(canteen_dishes, "soup")[:3]
+            staples = _role_pool(canteen_dishes, "staple")[:3]
+            meats = _role_pool(canteen_dishes, "meat")[:3]
+            greens = (_role_pool(canteen_dishes, "veg") + _role_pool(canteen_dishes, "soup"))[:3]
+            soups = _role_pool(canteen_dishes, "soup")[:2]
             if not (staples and meats and greens):
                 continue
             raw_combos = []
@@ -477,6 +517,8 @@ def candidate_plans(slot: str, target: dict, dishes: list[dict]) -> list[dict]:
                             if extra["id"] != m["id"]:
                                 raw_combos.append(base + [extra])
 
+        if len(raw_combos) > 40:
+            raw_combos = raw_combos[:40]
         pool_all = sorted(canteen_dishes, key=lambda d: d["scores"]["total"], reverse=True)
         for combo in raw_combos:
             key = _dedupe_key(combo)
@@ -515,6 +557,9 @@ def candidate_plans(slot: str, target: dict, dishes: list[dict]) -> list[dict]:
             })
 
     candidates.sort(key=lambda c: c["scores"]["total"], reverse=True)
+    if len(_CAND_CACHE) > 40:
+        _CAND_CACHE.clear()
+    _CAND_CACHE[key] = (time.time(), candidates)
     return candidates
 
 
@@ -629,10 +674,35 @@ def next_batch_no(slot: str, date: str) -> int:
 
 
 def evaluate_custom(dish_ids: list[int], slot: str, date: Optional[str] = None) -> dict:
-    """需求 8：用户自行选菜（如麻辣烫），给出推荐度与改进建议。"""
+    """用户自行选菜（购物车）评估：给出推荐度与改进建议。
+
+    slot="day" 时按"整日目标 vs 今日已吃"的剩余额度评估，用于一次选好三餐。
+    """
     date = date or db.today()
     profile = db.query_one("SELECT * FROM profiles WHERE user_id = 1") or {}
-    target, context = effective_target(profile, date, slot)
+    if slot == "day":
+        metrics = nutrition.profile_metrics(profile)
+        daily = metrics["daily"]
+        consumed = consumed_today(date)
+        target = {
+            "kcal": round(max(daily["kcal"] * 0.25, daily["kcal"] - consumed["kcal"]), 1),
+            "protein": round(max(daily["protein"] * 0.2, daily["protein"] - consumed["protein"]), 1),
+            "fat": round(max(daily["fat"] * 0.2, daily["fat"] - consumed["fat"]), 1),
+            "carbs": round(max(daily["carbs"] * 0.2, daily["carbs"] - consumed["carbs"]), 1),
+            "slot": "day",
+            "meal_name": "全天合计",
+            "meal_index": 0,
+            "share": 1.0,
+        }
+        context = {
+            "daily": daily,
+            "consumed": consumed,
+            "remaining": {k: round(max(0.0, daily[k] - consumed[k]), 1)
+                          for k in ("kcal", "protein", "fat", "carbs")},
+            "adjusted": consumed["kcal"] > 0,
+        }
+    else:
+        target, context = effective_target(profile, date, slot)
     dishes = {d["id"]: d for d in load_dishes()}
     items = [dishes[i] for i in dish_ids if i in dishes]
     if not items:
@@ -1009,18 +1079,34 @@ def build_day_options(date: Optional[str] = None, seed: int = 0,
     """生成 A/B/C 三套整日方案（尽量互不相同，每套都自带汇总与推荐度）。"""
     date = date or db.today()
     options: list[dict] = []
-    used: set[tuple] = set()
+    used_days: set[tuple] = set()
+    used_meals: dict[str, set[tuple]] = {}
     attempt = 0
-    while len(options) < count and attempt < count * 8:
+    while len(options) < count and attempt < count * 12:
         plan = build_day_plan(date, seed=seed + attempt * 37, include_passed=include_passed)
         attempt += 1
-        key = tuple(sorted(
+        day_key = tuple(sorted(
             tuple(sorted(i["dish_id"] for i in b["items"]))
             for b in plan["meals"] if b["status"] == "planned"
         ))
-        if not key or key in used:
+        if not day_key or day_key in used_days:
             continue
-        used.add(key)
+        # 每餐都要和已生成的方案不同，避免三套方案午餐一模一样
+        duplicate = False
+        for block in plan["meals"]:
+            items_key = tuple(sorted(i["dish_id"] for i in block["items"]))
+            if not items_key:
+                continue
+            if items_key in used_meals.setdefault(block.get("slot") or "", set()):
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        used_days.add(day_key)
+        for block in plan["meals"]:
+            items_key = tuple(sorted(i["dish_id"] for i in block["items"]))
+            if items_key:
+                used_meals[block.get("slot") or ""].add(items_key)
         plan["label"] = DAY_OPTION_LABELS[len(options)]
         options.append(plan)
     return options

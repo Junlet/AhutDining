@@ -19,7 +19,6 @@
     <button class="tab active" data-tab="home">推荐</button>
     <button class="tab" data-tab="day">今日</button>
     <button class="tab" data-tab="search">搜索</button>
-    <button class="tab" data-tab="custom">自选评估</button>
     <button class="tab" data-tab="favorites">收藏</button>
     <button class="tab" data-tab="settings">设置</button>
   </nav>
@@ -87,49 +86,48 @@
     <div class="summary" id="record-summary"></div>
   </section>
 
-  <!-- 搜索 -->
+  <!-- 搜索 + 自选购物车 -->
   <section class="panel" id="panel-search">
-    <h2>搜索菜品</h2>
-    <div class="filters">
-      <input id="search-q" class="input grow" placeholder="搜索菜名或标签，例如：牛肉、清淡、辣" />
-      <select id="search-canteen" class="select"></select>
-      <select id="search-category" class="select"></select>
-      <select id="search-sort" class="select">
-        <option value="score">按营养分排序</option>
-        <option value="price">按价格从低到高</option>
-        <option value="protein">按蛋白质从高到低</option>
-        <option value="kcal">按热量从低到高</option>
-      </select>
-      <button class="btn" id="btn-search">搜索</button>
-    </div>
-    <p class="muted" id="search-hint"></p>
-    <div class="cards" id="search-list"></div>
-  </section>
+    <div class="search-layout">
+      <div>
+        <h2>搜索菜品</h2>
+        <div class="filters">
+          <input id="search-q" class="input grow" placeholder="搜菜名 / 标签 / 食堂，回车搜索" />
+          <select id="search-canteen" class="select"></select>
+          <select id="search-category" class="select"></select>
+          <select id="search-sort" class="select">
+            <option value="score">按营养分排序</option>
+            <option value="price">按价格从低到高</option>
+            <option value="protein">按蛋白质从高到低</option>
+            <option value="kcal">按热量从低到高</option>
+          </select>
+          <button class="btn" id="btn-search">搜索</button>
+        </div>
+        <p class="muted" id="search-hint"></p>
+        <div class="cards" id="search-list"></div>
+      </div>
 
-  <!-- 自选评估 -->
-  <section class="panel" id="panel-custom">
-    <h2>自己搭配一餐，看看推荐度</h2>
-    <p class="muted">适合麻辣烫、称重快餐这类自助菜品：勾选你实际取的东西，系统按指南给出推荐度与改进建议。</p>
-    <div class="filters">
-      <input id="custom-q" class="input grow" placeholder="搜索要加入的菜品" />
-      <select id="custom-slot" class="select">
-        <option value="lunch">按午餐目标评估</option>
-        <option value="breakfast">按早餐目标评估</option>
-        <option value="dinner">按晚餐目标评估</option>
-        <option value="snack">按加餐目标评估</option>
-      </select>
-      <button class="btn primary" id="btn-evaluate">计算推荐度</button>
-    </div>
-    <div class="split">
-      <div>
-        <h3>可选菜品</h3>
-        <div class="pick-list" id="custom-pick"></div>
-      </div>
-      <div>
-        <h3>已选 <span id="custom-count">0</span> 项</h3>
-        <div class="chosen" id="custom-chosen"></div>
-        <div id="custom-result"></div>
-      </div>
+      <aside class="cart-panel">
+        <h2>自选一餐（购物车）</h2>
+        <p class="muted">把菜加入购物车，选好餐次后评估推荐度；满意可以直接替换到今日计划。</p>
+        <label class="cart-slot-label">评估餐次
+          <select id="cart-slot" class="select">
+            <option value="breakfast">早餐</option>
+            <option value="lunch" selected>午餐</option>
+            <option value="dinner">晚餐</option>
+            <option value="snack">加餐</option>
+            <option value="day">全天合计</option>
+          </select>
+        </label>
+        <div class="cart-items" id="cart-items"></div>
+        <div class="summary" id="cart-summary"></div>
+        <div class="row gap wrap" style="margin-top:10px">
+          <button class="btn primary" id="btn-cart-evaluate">评估推荐度</button>
+          <button class="btn" id="btn-cart-apply">替换到今日计划</button>
+          <button class="btn" id="btn-cart-clear">清空</button>
+        </div>
+        <div id="cart-result"></div>
+      </aside>
     </div>
   </section>
 
