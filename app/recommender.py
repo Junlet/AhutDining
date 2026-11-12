@@ -937,11 +937,15 @@ def get_day_state(date: Optional[str] = None) -> dict:
             state["options"] = build_day_options(date, state.get("seed", 0) + 1, include_passed)
             state["seed"] = state.get("seed", 0) + 1
         else:
-            plan = state.get("plan") or {}
-            pins = _pins_from(plan)
-            state["plan"] = build_day_plan(date, pins=pins,
-                                           seed=state.get("seed", 0) + 1,
-                                           include_passed=include_passed)
+            old_plan = state.get("plan") or {}
+            pins = _pins_from(old_plan)
+            label = old_plan.get("label")
+            rebuilt = build_day_plan(date, pins=pins,
+                                     seed=state.get("seed", 0) + 1,
+                                     include_passed=include_passed)
+            if label:
+                rebuilt["label"] = label
+            state["plan"] = rebuilt
             state["seed"] = state.get("seed", 0) + 1
         state["include_passed"] = include_passed
         state["auto_include_passed"] = auto_passed
@@ -1017,9 +1021,10 @@ def choose_day_option(date: Optional[str] = None, index: int = 0) -> dict:
 
 
 def _require_chosen(date: str) -> tuple[dict, dict]:
+    """已选方案（chosen）与手动挑选（manual）都算"有计划"。"""
     state = _load_state_row(date)
-    if not state or state.get("stage") != "chosen" or not state.get("plan"):
-        raise ValueError("还没有选择今日方案，请先在「今日计划」里选一套")
+    if not state or state.get("stage") not in ("chosen", "manual") or not state.get("plan"):
+        raise ValueError("还没有今日计划：可以在「推荐」页选一套方案，或用「手动选择」自己挑")
     return state, state["plan"]
 
 
@@ -1066,6 +1071,101 @@ def pin_day_meal(date: Optional[str], meal_index: int, pinned: bool) -> dict:
 
 def _dish_index() -> dict[int, dict]:
     return {d["id"]: d for d in load_dishes()}
+
+
+def _items_for(dish_ids: list[int]) -> list[dict]:
+    dishes = _dish_index()
+    return [_item_view(dishes[i])
+            for i in dict.fromkeys(int(x) for x in dish_ids) if i in dishes]
+
+
+def _meal_view(date: str, meal_index: int) -> Optional[dict]:
+    return next((m for m in meal_timeline(date) if m["meal_index"] == meal_index), None)
+
+
+def save_manual_record(date: str, meal_index: int, dish_ids: list[int]) -> dict:
+    """把某餐直接写成"手动补记"的用餐记录（用于已经过了时段的餐）。"""
+    items = _items_for(dish_ids)
+    if not items:
+        raise ValueError("没有找到要记录的菜品")
+    totals = _bundle(items)
+    meal = _meal_view(date, meal_index)
+    name = meal["meal_name"] if meal else f"第{meal_index}餐"
+    row = db.query_one(
+        "SELECT id FROM meal_records WHERE user_id = 1 AND date = ? AND meal_index = ?",
+        (date, meal_index))
+    if row:
+        db.execute(
+            """UPDATE meal_records SET status = 'manual', meal_name = ?, items_json = ?,
+               kcal = ?, protein = ?, fat = ?, carbs = ?, updated_at = ? WHERE id = ?""",
+            (name, json.dumps(items, ensure_ascii=False), totals["kcal"], totals["protein"],
+             totals["fat"], totals["carbs"], db.now(), row["id"]))
+    else:
+        db.execute(
+            """INSERT INTO meal_records (user_id, date, meal_index, meal_name, status,
+               items_json, kcal, protein, fat, carbs, created_at, updated_at)
+               VALUES (1, ?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?, ?)""",
+            (date, meal_index, name, json.dumps(items, ensure_ascii=False),
+             totals["kcal"], totals["protein"], totals["fat"], totals["carbs"],
+             db.now(), db.now()))
+    return {"meal_index": meal_index, "meal_name": name, "items": items, "totals": totals}
+
+
+def manual_meal(date: Optional[str], meal_index: int, dish_ids: list[int]) -> dict:
+    """「手动选择」一餐：过时段的餐记成补记，未到时段的餐写进今日计划。
+
+    返回 {"state": 最新状态, "saved_as": "record"|"plan", "meal": 记录信息或 None}
+    """
+    date = date or db.today()
+    meal = _meal_view(date, meal_index)
+    if meal is None:
+        raise ValueError("这一餐不在今天的餐次里")
+    items = _items_for(dish_ids)
+    if not items:
+        raise ValueError("没有找到要用的菜品")
+
+    passed = meal["status"] in ("recorded", "missed")
+    if passed:
+        info = save_manual_record(date, meal_index, dish_ids)
+        return {"state": get_day_state(date), "saved_as": "record", "meal": info}
+
+    state = _load_state_row(date)
+    if state and state.get("stage") == "chosen":
+        return {"state": set_day_meal(date, meal_index, dish_ids), "saved_as": "plan",
+                "meal": None}
+
+    pins = _pins_from(state["plan"]) if state and state.get("stage") == "manual" else {}
+    pins[meal_index] = items
+    seed = int((state or {}).get("seed") or 0) + 1
+    include_passed = True  # 手动挑选允许把已过时段也排进来（作为计划）
+    plan = build_day_plan(date, pins=pins, seed=seed, include_passed=include_passed)
+    plan["label"] = "手动"
+    new_state = {
+        "stage": "manual",
+        "date": date,
+        "now": _now_hhmm(),
+        "seed": seed,
+        "include_passed": include_passed,
+        "signature": _signature(date, include_passed),
+        "options": [],
+        "plan": plan,
+    }
+    _save_state_row(date, new_state)
+    return {"state": new_state, "saved_as": "plan", "meal": None}
+
+
+def commit_manual_plan(date: Optional[str] = None) -> dict:
+    """把手动挑选的计划正式设为「今日计划」。"""
+    date = date or db.today()
+    state = _load_state_row(date)
+    if not state or state.get("stage") != "manual" or not state.get("plan"):
+        raise ValueError("当前没有待确认的手动计划")
+    state["stage"] = "chosen"
+    state["plan"]["label"] = state["plan"].get("label") or "手动"
+    state["signature"] = _signature(date, bool(state.get("include_passed")))
+    state["now"] = _now_hhmm()
+    _save_state_row(date, state)
+    return state
 
 
 def set_day_meal(date: Optional[str], meal_index: int, dish_ids: list[int]) -> dict:

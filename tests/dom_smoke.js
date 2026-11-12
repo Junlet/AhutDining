@@ -255,7 +255,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const required = ['switchTab', 'loadHome', 'loadDayPlan', 'loadRecords',
       'renderHomeDay', 'renderDayTab', 'dayMealCard', 'openMealPicker',
       'openRecordEditor', 'pickMealForDish', 'applySetMeal', 'confirmDayMeal',
-      'refreshDayPlan', 'reselectDayPlan', 'chooseDayOption', 'renderModeSettings'];
+      'refreshDayPlan', 'reselectDayPlan', 'chooseDayOption', 'renderModeSettings',
+      'commitManualPlan', 'openMealPicker'];
     const missing = required.filter((name) => typeof sandbox[name] !== 'function');
     if (missing.length) throw new Error(`未定义：${missing.join(', ')}`);
   });

@@ -370,6 +370,56 @@ def test_day_plan_manual_pick() -> None:
     assert [i["dish_id"] for i in block2["items"]] == picked, "手动选择后刷新应保持"
 
 
+def test_day_plan_manual_flow() -> None:
+    """手动选择一餐：过了时段=补记，未到时段=计划；全部选完可设为今日计划。"""
+    call("POST", "/api/day-plan/reset", {})
+    state = call("GET", "/api/day-plan?include_passed=0")
+    options = state.get("options") or []
+    assert options, "没有 A/B/C 方案可用"
+    meals = options[0]["meals"]
+
+    missed = [m for m in meals if m["status"] == "missed"]
+    upcoming = [m for m in meals if m["status"] == "planned"]
+    assert upcoming, "当前没有未到时段的餐次，无法验证「提前选=计划」"
+    dishes = call("GET", "/api/dishes?sort=score")["items"]
+    assert len(dishes) >= 3
+
+    # 1) 未到时段 → 计入计划（stage 变 manual，等待确认）
+    pick_ids = [dishes[0]["dish_id"], dishes[1]["dish_id"]]
+    data = call("POST", "/api/day-plan/manual-meal",
+                {"meal_index": upcoming[0]["meal_index"], "dish_ids": pick_ids})
+    assert data["saved_as"] == "plan", f"未过时段的餐应算计划，实际 {data['saved_as']}"
+    assert data["stage"] == "manual"
+    plan = data["plan"]
+    assert plan["label"] == "手动"
+    block = next(m for m in plan["meals"] if m["meal_index"] == upcoming[0]["meal_index"])
+    assert [i["dish_id"] for i in block["items"]] == pick_ids
+    assert block["pinned"] is True
+
+    # 2) 设为今日计划
+    committed = call("POST", "/api/day-plan/commit", {})
+    assert committed["stage"] == "chosen"
+    assert committed["plan"]["label"] == "手动"
+    again = call("GET", "/api/day-plan?include_passed=1")
+    assert again["stage"] == "chosen", "确认后应保持已选状态"
+    block2 = next(m for m in again["plan"]["meals"]
+                  if m["meal_index"] == upcoming[0]["meal_index"])
+    assert [i["dish_id"] for i in block2["items"]] == pick_ids, "设为计划后内容应保留"
+
+    # 3) 过了时段 → 写成补记
+    if missed:
+        target = missed[0]
+        rec = call("POST", "/api/day-plan/manual-meal",
+                   {"meal_index": target["meal_index"], "dish_ids": [pick_ids[0]]})
+        assert rec["saved_as"] == "record", f"已过时段应算补记，实际 {rec['saved_as']}"
+        records = call("GET", f"/api/records?date={state['date']}")["records"]
+        saved = next(r for r in records if r["meal_index"] == target["meal_index"])
+        assert saved["status"] in ("manual", "confirmed")
+        call("DELETE", f"/api/records/{state['date']}/{target['meal_index']}")
+
+    call("POST", "/api/day-plan/reset", {})
+
+
 def test_day_plan_confirm_effect() -> None:
     state = _ensure_chosen()
     planned = [m for m in state["plan"]["meals"] if m["status"] == "planned" and m["items"]]
@@ -419,6 +469,7 @@ for name, fn in [
     ("今日计划·单餐刷新", test_day_plan_only_meal),
     ("今日计划·自选菜替换并补齐", test_day_plan_set_meal),
     ("今日计划·手动多选一餐", test_day_plan_manual_pick),
+    ("今日计划·手动选择补记/计划并确认", test_day_plan_manual_flow),
     ("今日计划·确认联动", test_day_plan_confirm_effect),
     ("今日计划·重置", test_day_plan_reset),
 ]:

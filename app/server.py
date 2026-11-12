@@ -1,4 +1,4 @@
-"""零依赖 HTTP 服务：标准库 http.server + sqlite3 实现全部 REST 接口。
+﻿"""零依赖 HTTP 服务：标准库 http.server + sqlite3 实现全部 REST 接口。
 
 启动：python run.py（或双击 start.bat）
 默认地址：http://127.0.0.1:8848
@@ -472,6 +472,31 @@ def handle_day_plan_choose(body: dict):
     return ok(_day_payload(state))
 
 
+def handle_day_plan_manual_meal(body: dict):
+    date = body.get("date") or db.today()
+    meal_index = int(body.get("meal_index") or 0)
+    dish_ids = [int(x) for x in (body.get("dish_ids") or [])]
+    if not meal_index or not dish_ids:
+        return fail("需要 meal_index 和 dish_ids")
+    try:
+        result = recommender.manual_meal(date, meal_index, dish_ids)
+    except ValueError as exc:
+        return fail(str(exc))
+    state = result["state"]
+    payload = _day_payload(state)
+    payload["saved_as"] = result["saved_as"]
+    payload["manual_meal"] = result.get("meal")
+    return ok(payload)
+
+
+def handle_day_plan_commit(body: dict):
+    date = body.get("date") or db.today()
+    try:
+        state = recommender.commit_manual_plan(date)
+    except ValueError as exc:
+        return fail(str(exc))
+    return ok(_day_payload(state))
+
 def handle_day_plan_pin(body: dict):
     date = body.get("date") or db.today()
     meal_index = int(body.get("meal_index") or 0)
@@ -560,6 +585,8 @@ ROUTES: list[Route] = [
     ("GET", r"^/api/day-plan$", lambda req, m, q, b: handle_day_plan(q)),
     ("POST", r"^/api/day-plan/refresh$", lambda req, m, q, b: handle_day_plan_refresh(b)),
     ("POST", r"^/api/day-plan/choose$", lambda req, m, q, b: handle_day_plan_choose(b)),
+    ("POST", r"^/api/day-plan/manual-meal$", lambda req, m, q, b: handle_day_plan_manual_meal(b)),
+    ("POST", r"^/api/day-plan/commit$", lambda req, m, q, b: handle_day_plan_commit(b)),
     ("POST", r"^/api/day-plan/pin$", lambda req, m, q, b: handle_day_plan_pin(b)),
     ("POST", r"^/api/day-plan/set-meal$", lambda req, m, q, b: handle_day_plan_set_meal(b)),
     ("POST", r"^/api/day-plan/complete-meal$",

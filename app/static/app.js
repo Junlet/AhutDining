@@ -89,6 +89,7 @@ async function init() {
   document.getElementById('btn-refresh').addEventListener('click', refreshPlans);
   document.getElementById('btn-day-refresh').addEventListener('click', refreshDayPlan);
   document.getElementById('btn-day-reselect').addEventListener('click', reselectDayPlan);
+  document.getElementById('btn-day-commit').addEventListener('click', commitManualPlan);
   document.getElementById('day-include-passed').addEventListener('change', loadDayPlan);
   document.getElementById('btn-search').addEventListener('click', runSearch);
   document.getElementById('search-q').addEventListener('keydown', (e) => {
@@ -586,17 +587,23 @@ function renderHomeDay(data) {
   if (!box || !hint) return;
 
   document.getElementById('day-include-passed').checked = !!data.include_passed;
-  document.getElementById('btn-home-day-refresh').classList.toggle('hidden', data.stage === 'chosen');
+  const hasPlan = data.stage === 'chosen' || data.stage === 'manual';
+  document.getElementById('btn-home-day-refresh').classList.toggle('hidden', hasPlan);
 
-  if (data.stage === 'chosen') {
+  if (hasPlan) {
     box.innerHTML = '';
     const plan = data.plan;
     goBtn.classList.remove('hidden');
+    if (data.stage === 'manual') {
+      hint.textContent = `你已手动挑选了 ${plan.summary.meals_total} 餐中的内容（整日推荐度 `
+        + `${(plan.avg_score * 100).toFixed(0)} 分 · ${plan.level}）。到「今日」点「设为今日计划」即可正式采用。`;
+    } else {
     hint.textContent = `已选定方案 ${plan.label || ''}（整日推荐度 ${(plan.avg_score * 100).toFixed(0)} 分 · ${plan.level}）`
       + `，共 ${plan.summary.meals_total} 餐：待安排 ${plan.summary.meals_remaining} 餐`
       + (plan.summary.meals_recorded ? `、已记录 ${plan.summary.meals_recorded} 餐` : '')
       + (plan.summary.meals_missed ? `、已错过 ${plan.summary.meals_missed} 餐` : '')
       + '。到「今日」里可以单餐刷新、固定或确认。';
+    }
     chosenBox.innerHTML = `
       <div class="targets">
         <div class="target"><div class="label">整日计划覆盖</div>
@@ -607,10 +614,14 @@ function renderHomeDay(data) {
         <div class="target"><div class="label">预计花费</div>
           <div class="value">¥${fmt(plan.summary.plan_price, 1)}</div></div>
         <div class="target"><div class="label">操作</div>
-          <button class="btn" id="btn-home-day-reselect">重新选择方案</button></div>
+          ${data.stage === 'manual'
+            ? '<button class="btn primary" id="btn-home-day-commit">设为今日计划</button>'
+            : '<button class="btn" id="btn-home-day-reselect">重新选择方案</button>'}</div>
       </div>`;
     const reBtn = document.getElementById('btn-home-day-reselect');
     if (reBtn) reBtn.addEventListener('click', reselectDayPlan);
+    const commitBtn = document.getElementById('btn-home-day-commit');
+    if (commitBtn) commitBtn.addEventListener('click', commitManualPlan);
     return;
   }
 
@@ -642,8 +653,11 @@ function renderDayTab(data) {
   const reselect = document.getElementById('btn-day-reselect');
   const refreshBtn = document.getElementById('btn-day-refresh');
 
-  reselect.classList.toggle('hidden', !(isToday && data.stage === 'chosen'));
-  refreshBtn.classList.toggle('hidden', !(isToday && data.stage === 'chosen'));
+  const hasPlan = data.stage === 'chosen' || data.stage === 'manual';
+  const commitBtn = document.getElementById('btn-day-commit');
+  if (commitBtn) commitBtn.classList.toggle('hidden', !(isToday && data.stage === 'manual'));
+  reselect.classList.toggle('hidden', !(isToday && hasPlan));
+  refreshBtn.classList.toggle('hidden', !(isToday && hasPlan));
 
   if (!isToday) {
     summaryBox.innerHTML = '';
@@ -651,10 +665,11 @@ function renderDayTab(data) {
     return;
   }
 
-  if (data.stage !== 'chosen') {
+  if (!hasPlan) {
     summaryBox.innerHTML = '';
     mealsBox.innerHTML = '';
-    hint.innerHTML = `今天还没有选定方案。到「推荐」页从 A/B/C 里挑一套，选完就会变成今日计划。`
+    hint.innerHTML = `今天还没有选定方案：可以到「推荐」页从 A/B/C 里挑一套，`
+      + '也可以直接在下面每一餐点「手动选择」自己搭配（过了时段的算补记，还没到的会自动组成计划）。'
       + ' <button class="btn small primary" id="btn-day-go-home">去推荐页选方案</button>';
     const go = document.getElementById('btn-day-go-home');
     if (go) go.addEventListener('click', () => switchTab('home'));
@@ -662,10 +677,13 @@ function renderDayTab(data) {
   }
 
   const plan = data.plan;
+  const manualNote = data.stage === 'manual'
+    ? '当前是手动挑选的计划，还没正式采用——满意后点右上角「设为今日计划」。' : '';
   hint.textContent = `方案 ${plan.label || ''}：共 ${plan.summary.meals_total} 餐，已记录 ${plan.summary.meals_recorded} 餐、`
     + `待安排 ${plan.summary.meals_remaining} 餐`
     + (plan.summary.meals_missed ? `、已错过 ${plan.summary.meals_missed} 餐` : '')
-    + '。可单餐刷新、固定，或用「选为这一餐」把自选菜换进来。';
+    + '。' + manualNote
+    + '可单餐刷新（卡片右上角 ↻）、固定，或用「手动选择」自己搭配这一餐。';
 
   const s = plan.summary;
   const daily = plan.daily;
@@ -765,6 +783,9 @@ function dayMealCard(meal, plan) {
           ${sourceBadge}
           <span class="${meal.status === 'planned' ? 'badge amber' : meal.status === 'recorded' ? 'badge' : 'badge grey'}">
             ${DAY_STATUS_TEXT[meal.status] || meal.status}</span>
+          ${meal.status === 'planned' && meal.items.length
+            ? '<button class="btn small icon-btn" data-act="refresh-meal" title="刷新这一餐">↻</button>'
+            : ''}
         </span>
       </h3>
       <div class="dish-meta">
@@ -809,20 +830,18 @@ function dayMealCard(meal, plan) {
       list.appendChild(row);
     });
   } else if (meal.status === 'missed') {
-    list.innerHTML = `<div class="dish-meta" style="padding:6px 0">这一餐已经过了时段，没有记录。可以手动补记（下方「补记」），或勾选上方「包含已过时段」重新安排。</div>`;
+    list.innerHTML = `<div class="dish-meta" style="padding:6px 0">这一餐已经过了时段，没有记录。点下方「手动选择」补上你实际吃的（算补记），或勾选上方「包含已过时段」重新安排。</div>`;
   } else if (meal.status === 'planned') {
     list.innerHTML = `<div class="dish-meta" style="padding:6px 0">这个时段暂时没有凑出合适组合。</div>`;
   }
 
   const actions = card.querySelector('.card-actions');
+  const refreshBtn = card.querySelector('[data-act="refresh-meal"]');
+  if (refreshBtn) refreshBtn.addEventListener('click', () => refreshOnlyMeal(meal.meal_index));
   if (meal.status === 'planned' && meal.items.length) {
     const pinBtn = el(`<button class="btn ${meal.pinned ? '' : 'ghost'}">${meal.pinned ? '取消固定' : '固定这餐'}</button>`);
     pinBtn.addEventListener('click', () => toggleDayPin(meal.meal_index, !meal.pinned));
     actions.appendChild(pinBtn);
-
-    const swapBtn = el('<button class="btn">刷新这一餐</button>');
-    swapBtn.addEventListener('click', () => refreshOnlyMeal(meal.meal_index));
-    actions.appendChild(swapBtn);
 
     const pickBtn = el('<button class="btn">手动选择</button>');
     pickBtn.title = '自己勾选菜品替换这一餐';
@@ -843,10 +862,8 @@ function dayMealCard(meal, plan) {
     pickBtn.addEventListener('click', () => openMealPicker(meal, plan));
     actions.appendChild(pickBtn);
   } else if (meal.status !== 'recorded') {
-    const markBtn = el('<button class="btn">手动补记</button>');
-    markBtn.addEventListener('click', () => openRecordEditor(plan.date, {
-      meal_index: meal.meal_index, meal_name: meal.meal_name, items: [],
-    }));
+    const markBtn = el('<button class="btn primary grow">手动选择</button>');
+    markBtn.addEventListener('click', () => openMealPicker(meal, plan));
     actions.appendChild(markBtn);
   } else {
     actions.appendChild(el('<span class="muted">这一餐已计入今日摄入</span>'));
@@ -1116,18 +1133,24 @@ async function openMealPicker(meal, plan) {
     const saveBtn = body.querySelector('#meal-pick-save');
     saveBtn.disabled = true;
     try {
-      const res = await api('/api/day-plan/set-meal', {
+      const res = await api('/api/day-plan/manual-meal', {
         method: 'POST',
         body: JSON.stringify({ meal_index: meal.meal_index, dish_ids: dishIds }),
       });
-      state.day = res;
+      const state_ = res;
+      const manualMeal = res.manual_meal;
+      delete state_.saved_as;
+      delete state_.manual_meal;
+      state.day = state_;
       closeModal();
-      renderHomeDay(res);
-      renderDayTab(res);
-      const updated = res.updated_meal;
-      toast(updated
-        ? `已替换${updated.meal_name}：推荐度 ${(updated.scores.total * 100).toFixed(0)} · ${updated.level}`
-        : '已替换这一餐');
+      renderHomeDay(state_);
+      renderDayTab(state_);
+      await loadRecords();
+      if (res.saved_as === 'record') {
+        toast(`已补记${manualMeal ? manualMeal.meal_name : '这一餐'}（时段已过）`);
+      } else {
+        toast(`已加入今日计划：${meal.meal_name}，可在上方点「设为今日计划」`);
+      }
     } catch (err) {
       toast(err.message);
     } finally {
@@ -1136,6 +1159,18 @@ async function openMealPicker(meal, plan) {
   });
 
   document.getElementById('modal').classList.add('open');
+}
+
+/* ── 把手动挑选的餐次正式设为今日计划 ──────────────────────────── */
+async function commitManualPlan() {
+  try {
+    const data = await api('/api/day-plan/commit', { method: 'POST', body: '{}' });
+    state.day = data;
+    renderHomeDay(data);
+    renderDayTab(data);
+    toast('已设为今日计划；后续可以单餐刷新或确认');
+    switchTab('day');
+  } catch (err) { toast(err.message); }
 }
 
 /* ── 用餐记录（与今日计划合并显示） ───────────────────────────── */
@@ -1155,7 +1190,8 @@ async function loadRecords(date) {
 
   const isToday = target === ((state.boot && state.boot.date) || todayString());
   const stage = state.day && state.day.stage;
-  if (!isToday || stage !== 'chosen') {
+  const hasPlan = stage === 'chosen' || stage === 'manual';
+  if (!isToday || !hasPlan) {
     const mealsBox = document.getElementById('day-meals');
     mealsBox.innerHTML = '';
     data.records.forEach((record) => mealsBox.appendChild(recordCard(target, record)));
@@ -1164,7 +1200,7 @@ async function loadRecords(date) {
 
 function recordCard(date, record) {
   const statusText = record.status === 'confirmed' ? '已确认'
-    : record.status === 'manual' ? '手动补记' : '未记录';
+    : record.status === 'manual' ? '手动选择' : '未记录';
   const badgeClass = record.status === 'empty' ? 'badge grey' : 'badge';
   const card = el(`
     <div class="record ${record.status === 'empty' ? 'empty' : ''}">
@@ -1180,7 +1216,7 @@ function recordCard(date, record) {
         <span>碳水 ${fmt(record.carbs, 1)}g</span>
       </div>
       <div class="card-actions">
-        <button class="btn primary grow" data-act="edit">${record.status === 'empty' ? '手动补记' : '修改'}</button>
+        <button class="btn primary grow" data-act="edit">${record.status === 'empty' ? '手动选择' : '修改'}</button>
         ${record.status === 'empty' ? '' : '<button class="btn" data-act="clear">清空</button>'}
       </div>
     </div>`);
@@ -1197,7 +1233,19 @@ function recordCard(date, record) {
   } else {
     list.innerHTML = `<div class="dish-meta" style="padding:6px 0">还没有记录这一餐</div>`;
   }
-  card.querySelector('[data-act="edit"]').addEventListener('click', () => openRecordEditor(date, record));
+  card.querySelector('[data-act="edit"]').addEventListener('click', () => {
+    const today = (state.boot && state.boot.date) || todayString();
+    if (date === today) {
+      openMealPicker({
+        meal_index: record.meal_index,
+        meal_name: record.meal_name,
+        target: record.target || { kcal: 0, protein: 0 },
+        items: record.items || [],
+      }, { date });
+    } else {
+      openRecordEditor(date, record);
+    }
+  });
   const clearBtn = card.querySelector('[data-act="clear"]');
   if (clearBtn) {
     clearBtn.addEventListener('click', async () => {
