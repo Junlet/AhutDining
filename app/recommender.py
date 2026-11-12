@@ -750,7 +750,8 @@ def summarize_plan(plan: dict) -> dict:
 
 
 def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dict]]] = None,
-                   seed: int = 0, include_passed: bool = False) -> dict:
+                   seed: int = 0, include_passed: bool = False,
+                   force_include: Optional[set[int]] = None) -> dict:
     """生成一套整日方案。
 
     * 只安排「还没记录、且时间还没过」的餐次；已过时段且没记录的算"错过"（除非 include_passed）
@@ -765,10 +766,12 @@ def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dic
     timeline = meal_timeline(date)
 
     pins = pins or {}
+    force = set(force_include or ())
     remaining = [
         meal for meal in timeline
         if meal["status"] == "planned"
         or (include_passed and meal["status"] == "missed")
+        or meal["meal_index"] in force
     ]
     total_share = sum(meal["share"] for meal in remaining) or 1.0
 
@@ -787,7 +790,7 @@ def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dic
                 meal, {"kcal": meal["recorded_kcal"]}, meal["recorded_items"], False,
                 "recorded", "recorded"))
             continue
-        if meal["status"] == "missed" and not include_passed:
+        if meal["status"] == "missed" and not include_passed and idx not in force:
             blocks.append(_plan_meal_block(meal, {"kcal": 0}, [], False, "missed"))
             continue
 
@@ -1112,9 +1115,12 @@ def save_manual_record(date: str, meal_index: int, dish_ids: list[int]) -> dict:
 
 
 def manual_meal(date: Optional[str], meal_index: int, dish_ids: list[int]) -> dict:
-    """「手动选择」一餐：过时段的餐记成补记，未到时段的餐写进今日计划。
+    """「手动选择」一餐：直接把这一餐替换成你挑的菜。
 
-    返回 {"state": 最新状态, "saved_as": "record"|"plan", "meal": 记录信息或 None}
+    * 未到时段的餐：替换计划里的这一餐（stage 变 manual，等用户「设为今日计划」）
+    * 已到时段的餐（已错过 / 已记录）：同样替换计划内容，并同步更新/新建用餐记录，
+      保证「记录合计」和「计划」一致
+    返回 {"state", "saved_as": "plan", "record_synced": bool}
     """
     date = date or db.today()
     meal = _meal_view(date, meal_index)
@@ -1124,24 +1130,32 @@ def manual_meal(date: Optional[str], meal_index: int, dish_ids: list[int]) -> di
     if not items:
         raise ValueError("没有找到要用的菜品")
 
-    passed = meal["status"] in ("recorded", "missed")
-    if passed:
-        info = save_manual_record(date, meal_index, dish_ids)
-        return {"state": get_day_state(date), "saved_as": "record", "meal": info}
-
     state = _load_state_row(date)
-    if state and state.get("stage") == "chosen":
-        return {"state": set_day_meal(date, meal_index, dish_ids), "saved_as": "plan",
-                "meal": None}
+    passed = meal["status"] in ("recorded", "missed")
 
-    pins = _pins_from(state["plan"]) if state and state.get("stage") == "manual" else {}
+    # 时段已过：先同步记录（这样重建计划时该餐会被算作"已记录"并带上新内容）
+    if passed:
+        save_manual_record(date, meal_index, dish_ids)
+
+    if state and state.get("stage") in ("chosen", "manual"):
+        stage = state["stage"]
+        pins = dict(_pins_from(state.get("plan") or {}))
+        label = (state.get("plan") or {}).get("label")
+        include_passed = bool(state.get("include_passed"))
+    else:
+        stage = "manual"
+        pins = {}
+        label = "手动"
+        include_passed = bool((state or {}).get("include_passed"))
+
     pins[meal_index] = items
     seed = int((state or {}).get("seed") or 0) + 1
-    include_passed = True  # 手动挑选允许把已过时段也排进来（作为计划）
-    plan = build_day_plan(date, pins=pins, seed=seed, include_passed=include_passed)
-    plan["label"] = "手动"
+    plan = build_day_plan(date, pins=pins, seed=seed, include_passed=include_passed,
+                          force_include={meal_index})
+    if label:
+        plan["label"] = label
     new_state = {
-        "stage": "manual",
+        "stage": stage,
         "date": date,
         "now": _now_hhmm(),
         "seed": seed,
@@ -1151,7 +1165,7 @@ def manual_meal(date: Optional[str], meal_index: int, dish_ids: list[int]) -> di
         "plan": plan,
     }
     _save_state_row(date, new_state)
-    return {"state": new_state, "saved_as": "plan", "meal": None}
+    return {"state": new_state, "saved_as": "plan", "record_synced": passed, "meal": None}
 
 
 def commit_manual_plan(date: Optional[str] = None) -> dict:

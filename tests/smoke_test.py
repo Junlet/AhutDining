@@ -371,51 +371,66 @@ def test_day_plan_manual_pick() -> None:
 
 
 def test_day_plan_manual_flow() -> None:
-    """手动选择一餐：过了时段=补记，未到时段=计划；全部选完可设为今日计划。"""
+    """手动选择 = 直接替换那一餐；时段已过时同步更新记录，全部可拼成自己的计划。"""
     call("POST", "/api/day-plan/reset", {})
     state = call("GET", "/api/day-plan?include_passed=0")
     options = state.get("options") or []
     assert options, "没有 A/B/C 方案可用"
     meals = options[0]["meals"]
-
-    missed = [m for m in meals if m["status"] == "missed"]
     upcoming = [m for m in meals if m["status"] == "planned"]
-    assert upcoming, "当前没有未到时段的餐次，无法验证「提前选=计划」"
+    missed = [m for m in meals if m["status"] == "missed"]
+    assert upcoming, "当前没有未到时段的餐次"
     dishes = call("GET", "/api/dishes?sort=score")["items"]
     assert len(dishes) >= 3
+    first_ids = [dishes[0]["dish_id"], dishes[1]["dish_id"]]
 
-    # 1) 未到时段 → 计入计划（stage 变 manual，等待确认）
-    pick_ids = [dishes[0]["dish_id"], dishes[1]["dish_id"]]
+    # 1) 未到时段：替换计划里的这一餐（stage 变 manual，等待确认）
     data = call("POST", "/api/day-plan/manual-meal",
-                {"meal_index": upcoming[0]["meal_index"], "dish_ids": pick_ids})
-    assert data["saved_as"] == "plan", f"未过时段的餐应算计划，实际 {data['saved_as']}"
+                {"meal_index": upcoming[0]["meal_index"], "dish_ids": first_ids})
+    assert data["saved_as"] == "plan"
+    assert data["record_synced"] is False
     assert data["stage"] == "manual"
     plan = data["plan"]
     assert plan["label"] == "手动"
     block = next(m for m in plan["meals"] if m["meal_index"] == upcoming[0]["meal_index"])
-    assert [i["dish_id"] for i in block["items"]] == pick_ids
+    assert [i["dish_id"] for i in block["items"]] == first_ids, "手选应直接替换该餐内容"
     assert block["pinned"] is True
 
-    # 2) 设为今日计划
-    committed = call("POST", "/api/day-plan/commit", {})
-    assert committed["stage"] == "chosen"
-    assert committed["plan"]["label"] == "手动"
-    again = call("GET", "/api/day-plan?include_passed=1")
-    assert again["stage"] == "chosen", "确认后应保持已选状态"
-    block2 = next(m for m in again["plan"]["meals"]
-                  if m["meal_index"] == upcoming[0]["meal_index"])
-    assert [i["dish_id"] for i in block2["items"]] == pick_ids, "设为计划后内容应保留"
-
-    # 3) 过了时段 → 写成补记
+    # 2) 已过时段：同样替换该餐，并同步写记录
     if missed:
         target = missed[0]
-        rec = call("POST", "/api/day-plan/manual-meal",
-                   {"meal_index": target["meal_index"], "dish_ids": [pick_ids[0]]})
-        assert rec["saved_as"] == "record", f"已过时段应算补记，实际 {rec['saved_as']}"
+        second_ids = [dishes[2]["dish_id"]]
+        data2 = call("POST", "/api/day-plan/manual-meal",
+                     {"meal_index": target["meal_index"], "dish_ids": second_ids})
+        assert data2["saved_as"] == "plan"
+        assert data2["record_synced"] is True, "已过时段的手选应同步记录"
+        block2 = next(m for m in data2["plan"]["meals"]
+                      if m["meal_index"] == target["meal_index"])
+        assert [i["dish_id"] for i in block2["items"]] == second_ids, "已过时段的手选也要替换计划内容"
         records = call("GET", f"/api/records?date={state['date']}")["records"]
         saved = next(r for r in records if r["meal_index"] == target["meal_index"])
+        assert [i["dish_id"] for i in saved["items"]] == second_ids, "记录应同步成刚选的内容"
         assert saved["status"] in ("manual", "confirmed")
-        call("DELETE", f"/api/records/{state['date']}/{target['meal_index']}")
+
+    # 3) 设为今日计划
+    committed = call("POST", "/api/day-plan/commit", {})
+    assert committed["stage"] == "chosen"
+    again = call("GET", "/api/day-plan?include_passed=1")
+    assert again["stage"] == "chosen"
+    kept = next(m for m in again["plan"]["meals"]
+                if m["meal_index"] == upcoming[0]["meal_index"])
+    assert [i["dish_id"] for i in kept["items"]] == first_ids, "确认后内容应保留"
+
+    # 4) 已记录的餐可以再次手选替换（记录同步更新）
+    if missed:
+        third_ids = [dishes[3]["dish_id"], dishes[4]["dish_id"]]
+        data3 = call("POST", "/api/day-plan/manual-meal",
+                     {"meal_index": missed[0]["meal_index"], "dish_ids": third_ids})
+        assert data3["record_synced"] is True
+        block3 = next(m for m in data3["plan"]["meals"]
+                      if m["meal_index"] == missed[0]["meal_index"])
+        assert [i["dish_id"] for i in block3["items"]] == third_ids
+        call("DELETE", f"/api/records/{state['date']}/{missed[0]['meal_index']}")
 
     call("POST", "/api/day-plan/reset", {})
 

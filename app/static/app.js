@@ -678,7 +678,7 @@ function renderDayTab(data) {
 
   const plan = data.plan;
   const manualNote = data.stage === 'manual'
-    ? '当前是手动挑选的计划，还没正式采用——满意后点右上角「设为今日计划」。' : '';
+    ? '当前是手动挑选的计划（手选会直接替换该餐内容），满意后点右上角「设为今日计划」。' : '';
   hint.textContent = `方案 ${plan.label || ''}：共 ${plan.summary.meals_total} 餐，已记录 ${plan.summary.meals_recorded} 餐、`
     + `待安排 ${plan.summary.meals_remaining} 餐`
     + (plan.summary.meals_missed ? `、已错过 ${plan.summary.meals_missed} 餐` : '')
@@ -867,7 +867,10 @@ function dayMealCard(meal, plan) {
     actions.appendChild(markBtn);
   } else {
     actions.appendChild(el('<span class="muted">这一餐已计入今日摄入</span>'));
-    const editBtn = el('<button class="btn">修改</button>');
+    const pickBtn = el('<button class="btn primary grow">手动选择</button>');
+    pickBtn.addEventListener('click', () => openMealPicker(meal, plan));
+    actions.appendChild(pickBtn);
+    const editBtn = el('<button class="btn">改记录</button>');
     editBtn.addEventListener('click', () => openRecordEditor(plan.date, {
       meal_index: meal.meal_index, meal_name: meal.meal_name, items: meal.items || [],
     }));
@@ -1146,10 +1149,12 @@ async function openMealPicker(meal, plan) {
       renderHomeDay(state_);
       renderDayTab(state_);
       await loadRecords();
-      if (res.saved_as === 'record') {
-        toast(`已补记${manualMeal ? manualMeal.meal_name : '这一餐'}（时段已过）`);
+      if (res.record_synced) {
+        toast(`已替换${meal.meal_name}，并同步更新了用餐记录`);
+      } else if (res.stage === 'manual') {
+        toast(`已替换${meal.meal_name}，满意后点「设为今日计划」`);
       } else {
-        toast(`已加入今日计划：${meal.meal_name}，可在上方点「设为今日计划」`);
+        toast(`已替换${meal.meal_name}`);
       }
     } catch (err) {
       toast(err.message);

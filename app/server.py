@@ -484,7 +484,8 @@ def handle_day_plan_manual_meal(body: dict):
         return fail(str(exc))
     state = result["state"]
     payload = _day_payload(state)
-    payload["saved_as"] = result["saved_as"]
+    payload["saved_as"] = result.get("saved_as", "plan")
+    payload["record_synced"] = bool(result.get("record_synced"))
     payload["manual_meal"] = result.get("meal")
     return ok(payload)
 
