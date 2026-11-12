@@ -1,6 +1,6 @@
-﻿// 前端渲染冒烟测试：在 Node 里用极简 DOM 桩执行 app.js，
-// 目的不是验证样式，而是把"模板字符串里写错、调错方法"这类错误拦在提交前
-// （真实事故：fmt(...).toFixed 让人打开就是白屏）。
+﻿// 前端渲染冒烟测试：在 Node 里用极简 DOM 桩执行 app.js。
+// 目的不是验证样式，而是把"模板字符串写错、调错方法、函数被删掉导致标签点不动"这类
+// 错误拦在提交前（真实事故 1：fmt(...).toFixed 导致整页白屏；事故 2：switchTab 被删，标签全失效）。
 //
 // 用法：node tests/dom_smoke.js [port]
 const fs = require('fs');
@@ -13,10 +13,10 @@ const appPath = path.join(__dirname, '..', 'app', 'static', 'app.js');
 const code = fs.readFileSync(appPath, 'utf8');
 
 /* ── 极简 DOM 桩 ─────────────────────────────────────────── */
-const htmlWrites = {};      // id -> 最后一次写入的 innerHTML
-const bodyPrepend = [];     // body.prepend 调用的参数（用来发现 fatal banner）
+const htmlWrites = {};
+const bodyPrepend = [];
 const listeners = {};
-let errorHandlers = [];
+const TAB_NAMES = ['home', 'day', 'search', 'custom', 'favorites', 'settings'];
 
 function makeClassList() {
   const set = new Set();
@@ -53,7 +53,7 @@ function makeEl(tag = 'div') {
     querySelectorAll: () => [],
     getBoundingClientRect: () => ({ width: 0, height: 0, top: 0, left: 0 }),
     focus: () => {},
-    click: () => {},
+    click: () => { (listeners[`${el.id}:click`] || []).forEach((fn) => fn({ target: el })); },
   };
   return el;
 }
@@ -72,10 +72,30 @@ function getEl(id) {
 const body = makeEl('body');
 body.prepend = (child) => { bodyPrepend.push(child); body.children.unshift(child); return child; };
 
+const tabEls = TAB_NAMES.map((name) => {
+  const el = makeEl('button');
+  el.id = `tab-${name}`;
+  el.dataset = { tab: name };
+  return el;
+});
+const panelEls = TAB_NAMES.map((name) => {
+  const el = makeEl('section');
+  el.id = `panel-${name}`;
+  el.classList.add('panel');
+  return el;
+});
+
 const documentStub = {
-  getElementById: (id) => getEl(id),
-  querySelector: (sel) => makeEl(),
-  querySelectorAll: () => [],
+  // 面板与标签用同一批对象，switchTab 里的 getElementById 才能命中
+  getElementById: (id) => panelEls.find((p) => p.id === id)
+    || tabEls.find((t) => t.id === id)
+    || getEl(id),
+  querySelector: () => makeEl(),
+  querySelectorAll: (sel) => {
+    if (sel === '.tab') return tabEls;
+    if (sel === '.panel') return panelEls;
+    return [];
+  },
   createElement: (tag) => {
     if (tag === 'template') {
       const tpl = { _html: '', content: { firstElementChild: null } };
@@ -93,14 +113,11 @@ const documentStub = {
 };
 
 const windowStub = {
-  addEventListener: (type, fn) => {
-    if (type === 'error') errorHandlers.push(fn);
-    else (listeners[`window:${type}`] ||= []).push(fn);
-  },
+  addEventListener: (type, fn) => { (listeners[`window:${type}`] ||= []).push(fn); },
   location: { reload: () => {} },
-  setInterval: (fn, ms) => 0,
+  setInterval: () => 0,
   clearInterval: () => {},
-  setTimeout: (fn, ms) => 0,
+  setTimeout: (fn) => { try { fn(); } catch (err) { console.error('timer error', err); } return 0; },
   clearTimeout: () => {},
 };
 
@@ -112,28 +129,20 @@ const sandbox = {
   fetch: (url, opts) => fetch(url.startsWith('http') ? url : BASE + url, opts),
   URLSearchParams,
   FileReader: class { readAsDataURL() { this.onload && this.onload(); } },
-  setInterval: windowStub.setInterval,
-  clearInterval: windowStub.clearInterval,
+  setInterval: () => 0,
+  clearInterval: () => {},
   setTimeout: (fn) => { try { fn(); } catch (err) { console.error('timer error', err); } return 0; },
   clearTimeout: () => {},
   alert: () => {},
 };
-
 windowStub.document = documentStub;
 sandbox.globalThis = sandbox;
 
-/* ── 执行 app.js ─────────────────────────────────────────── */
 let fatal = null;
 process.on('unhandledRejection', (reason) => {
   fatal = String((reason && reason.message) || reason);
   console.error('[unhandledRejection]', reason);
 });
-
-const origInit = code.indexOf('init().catch');
-if (origInit < 0) {
-  console.log('[FAIL] app.js 找不到 init() 启动代码');
-  process.exit(1);
-}
 
 try {
   vm.createContext(sandbox);
@@ -142,6 +151,12 @@ try {
   console.log(`[FAIL] app.js 执行抛错：${err.message}`);
   process.exit(1);
 }
+
+let dayStage = null;
+fetch(`${BASE}/api/day-plan?include_passed=1`)
+  .then((res) => res.json())
+  .then((json) => { dayStage = (json.data && json.data.stage) || null; })
+  .catch(() => { dayStage = null; });
 
 function check(name, fn) {
   try {
@@ -154,58 +169,72 @@ function check(name, fn) {
   }
 }
 
-let dayStage = null;
-fetch(BASE + '/api/day-plan?include_passed=1')
-  .then((res) => res.json())
-  .then((json) => { dayStage = (json.data && json.data.stage) || null; })
-  .catch(() => { dayStage = null; });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-setTimeout(() => {
-  let pass = 0, fail = 0;
+(async () => {
+  await sleep(2600);
+  let pass = 0;
+  let fail = 0;
   const run = (name, fn) => { if (check(name, fn)) pass++; else fail++; };
 
   run('未触发初始化失败横幅', () => {
     if (bodyPrepend.length) {
       const banner = bodyPrepend[0];
       const text = (banner && (banner.innerHTML || banner.textContent)) || '';
-      throw new Error(`页面被替换为错误提示：${String(text).replace(/<[^>]*>/g, '').slice(0, 120)}`);
+      throw new Error(`页面被替换为错误提示：${String(text).replace(/<[^>]*>/g, '').slice(0, 140)}`);
     }
   });
 
   run('顶部今日速览已渲染', () => {
-    if (!htmlWrites['todaybar'] || !htmlWrites['todaybar'].includes('今日目标')) {
-      throw new Error(`todaybar 内容为空：${(htmlWrites['todaybar'] || '').slice(0, 60)}`);
+    const html = htmlWrites['todaybar'] || '';
+    if (!html.includes('今日目标')) throw new Error(`todaybar 内容为空：${html.slice(0, 60)}`);
+  });
+
+  run('标签页都绑定了点击事件', () => {
+    const missing = tabEls.filter((t) => !(listeners[`${t.id}:click`] || []).length);
+    if (missing.length) throw new Error(`这些标签没绑定点击：${missing.map((t) => t.dataset.tab).join(', ')}`);
+  });
+
+  run('点击标签能切换面板', () => {
+    const target = tabEls.find((t) => t.dataset.tab === 'search');
+    target.click();
+    const panel = panelEls.find((p) => p.id === 'panel-search');
+    if (!panel.classList.contains('active')) throw new Error('点击「搜索」后面板没有激活');
+    const others = panelEls.filter((p) => p.id !== 'panel-search' && p.classList.contains('active'));
+    if (others.length) throw new Error(`其它面板没有取消激活：${others.map((p) => p.id).join(', ')}`);
+  });
+
+  run('推荐页按模式渲染出内容', () => {
+    const isDayMode = byId['home-day'] && !byId['home-day'].classList.contains('hidden');
+    const dayOptions = byId['home-day-options'] ? byId['home-day-options'].children.length : 0;
+    const singleCards = byId['plan-list'] ? byId['plan-list'].children.length : 0;
+    if (isDayMode && dayOptions === 0 && dayStage === 'options') {
+      throw new Error('一天方案模式下应渲染 A/B/C 卡片');
+    }
+    if (!isDayMode && singleCards === 0) {
+      throw new Error('单道菜模式下推荐列表为空');
     }
   });
 
-  run('推荐列表已渲染', () => {
-    const list = byId['plan-list'];
-    if (!list || list.children.length === 0) {
-      throw new Error(`plan-list 没有卡片（children=${list ? list.children.length : '无节点'}）`);
+  run('今日页按阶段渲染', () => {
+    const hint = String((byId['day-hint'] && byId['day-hint'].textContent) || '')
+      || String((byId['day-hint'] && byId['day-hint'].innerHTML) || '');
+    if (!hint) throw new Error('今日页没有提示文字');
+    if (dayStage === 'options' && !hint.includes('还没有选定')) {
+      throw new Error(`未选方案时应提示去推荐页，实际：${hint.slice(0, 60)}`);
     }
-  });
-
-  run('今日计划已渲染', () => {
-    const options = byId['day-options'];
-    const hint = (byId['day-hint'] && byId['day-hint'].textContent) || '';
-    const cards = options ? options.children.length : 0;
-    if (cards === 0 && !hint) {
-      throw new Error('今日计划既没有方案卡片也没有提示文字');
-    }
-    if (hint && !/[0-9]/.test(hint)) {
-      throw new Error(`今日计划提示异常：${hint.slice(0, 60)}`);
+    if (dayStage === 'chosen') {
+      const cards = byId['day-meals'] ? byId['day-meals'].children.length : 0;
+      if (cards < 1) throw new Error('已选方案后今日页应显示餐次卡片');
     }
   });
 
   run('未出现 NaN / undefined / [object', () => {
     const walk = (node, where) => {
       if (!node) return;
-      const chunks = [String(node._html || ''), String(node.textContent || '')];
-      for (const chunk of chunks) {
+      for (const chunk of [String(node._html || ''), String(node.textContent || '')]) {
         for (const bad of ['NaN', 'undefined', '[object']) {
-          if (chunk.includes(bad)) {
-            throw new Error(`${where} 里出现了 ${bad}：${chunk.slice(0, 120)}`);
-          }
+          if (chunk.includes(bad)) throw new Error(`${where} 里出现了 ${bad}：${chunk.slice(0, 120)}`);
         }
       }
       (node.children || []).forEach((child, i) => walk(child, `${where} > child[${i}]`));
@@ -213,32 +242,22 @@ setTimeout(() => {
     for (const [id, node] of Object.entries(byId)) walk(node, `#${id}`);
   });
 
-  run('渲染过程中没有未捕获错误', () => {
-    if (fatal) throw new Error(fatal);
-  });
-
   run('没有出现"加载失败"提示', () => {
     const toastText = String((byId['toast'] && byId['toast'].textContent) || '');
     if (toastText.includes('失败')) throw new Error(`页面提示：${toastText}`);
   });
 
-  run('今日计划按阶段渲染出内容', () => {
-    const hint = String((byId['day-hint'] && byId['day-hint'].textContent) || '');
-    if (dayStage === 'options') {
-      const cards = byId['day-options'] ? byId['day-options'].children.length : 0;
-      if (cards < 1) throw new Error(`未选方案阶段应渲染 A/B/C 卡片，实际 ${cards} 张（提示：${hint.slice(0, 60)}）`);
-      const first = byId['day-options'].children[0];
-      const text = String((first && first._html) || '');
-      if (text && !/方案/.test(text) && !/option-card/.test(text)) {
-        throw new Error(`方案卡片内容异常：${text.slice(0, 100)}`);
-      }
-    } else if (dayStage === 'chosen') {
-      const cards = byId['day-meals'] ? byId['day-meals'].children.length : 0;
-      if (cards < 1) throw new Error(`已选方案阶段应渲染餐次卡片，实际 ${cards} 张`);
-    }
+  run('渲染过程中没有未捕获错误', () => {
+    if (fatal) throw new Error(fatal);
+  });
+
+  run('设置页有推荐模式选项', () => {
+    const box = byId['mode-group'];
+    if (!box) throw new Error('找不到 #mode-group');
+    if (!box.children.length) throw new Error('推荐模式没有渲染出选项');
   });
 
   console.log('-'.repeat(46));
   console.log(`通过 ${pass} 项，失败 ${fail} 项`);
   process.exit(fail ? 1 : 0);
-}, 2500);
+})();

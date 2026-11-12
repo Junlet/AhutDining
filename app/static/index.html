@@ -17,10 +17,9 @@
   </div>
   <nav class="tabs" id="tabs">
     <button class="tab active" data-tab="home">推荐</button>
-    <button class="tab" data-tab="day">今日计划</button>
+    <button class="tab" data-tab="day">今日</button>
     <button class="tab" data-tab="search">搜索</button>
     <button class="tab" data-tab="custom">自选评估</button>
-    <button class="tab" data-tab="records">用餐记录</button>
     <button class="tab" data-tab="favorites">收藏</button>
     <button class="tab" data-tab="settings">设置</button>
   </nav>
@@ -29,41 +28,61 @@
 <div class="todaybar" id="todaybar"></div>
 
 <main>
-  <!-- 首页推荐 -->
+  <!-- 推荐：按设置里的模式显示「单道菜套餐」或「一天方案」 -->
   <section class="panel active" id="panel-home">
-    <div class="row between center wrap">
-      <div>
-        <h2>今天吃点什么</h2>
-        <p class="muted" id="home-slot">正在判断当前用餐时段…</p>
+    <!-- 模式一：单道菜（只推荐当前这一餐） -->
+    <div id="home-single">
+      <div class="row between center wrap">
+        <div>
+          <h2>今天吃点什么</h2>
+          <p class="muted" id="home-slot">正在判断当前用餐时段…</p>
+        </div>
+        <div class="row gap">
+          <select id="home-slot-select" class="select" title="切换餐次"></select>
+          <button class="btn primary" id="btn-refresh">换一批推荐</button>
+        </div>
       </div>
-      <div class="row gap">
-        <select id="home-slot-select" class="select" title="切换餐次"></select>
-        <button class="btn primary" id="btn-refresh">换一批推荐</button>
-      </div>
+      <div class="targets" id="home-targets"></div>
+      <div class="cards" id="plan-list"></div>
     </div>
-    <div class="targets" id="home-targets"></div>
-    <div class="cards" id="plan-list"></div>
+
+    <!-- 模式二：一天方案（A/B/C 整日方案，选定后进入「今日」） -->
+    <div id="home-day" class="hidden">
+      <div class="row between center wrap">
+        <div>
+          <h2>今天的整日方案</h2>
+          <p class="muted" id="home-day-hint">正在按当前时间与用餐记录计算还剩几餐…</p>
+        </div>
+        <div class="row gap wrap">
+          <button class="btn" id="btn-home-day-refresh">换一批方案</button>
+          <button class="btn primary hidden" id="btn-home-day-go">去今日计划</button>
+        </div>
+      </div>
+      <div class="cards" id="home-day-options"></div>
+      <div id="home-day-chosen"></div>
+    </div>
   </section>
 
-  <!-- 今日用餐计划 -->
+  <!-- 今日：合并了「今日计划」与「用餐记录」 -->
   <section class="panel" id="panel-day">
     <div class="row between center wrap">
       <div>
-        <h2>今日用餐计划</h2>
-        <p class="muted" id="day-hint">正在按当前时间计算今天还剩几餐…</p>
+        <h2>今日计划与记录</h2>
+        <p class="muted" id="day-hint">正在读取今天的计划与记录…</p>
       </div>
       <div class="row gap wrap">
+        <input type="date" id="day-date" class="input" />
+        <button class="btn" id="btn-day-today">回到今天</button>
         <label class="muted" style="display:flex;align-items:center;gap:6px">
           <input type="checkbox" id="day-include-passed"> 包含已过时段
         </label>
         <button class="btn hidden" id="btn-day-reselect">重新选择方案</button>
-        <button class="btn" id="btn-day-refresh">换一批方案 / 刷新未固定的餐</button>
+        <button class="btn" id="btn-day-refresh">刷新未固定的餐</button>
       </div>
     </div>
     <div class="targets" id="day-summary"></div>
-    <h3 id="day-options-title" class="hidden">请选择一套今日方案</h3>
-    <div class="cards" id="day-options"></div>
     <div class="records" id="day-meals"></div>
+    <div class="summary" id="record-summary"></div>
   </section>
 
   <!-- 搜索 -->
@@ -112,20 +131,6 @@
     </div>
   </section>
 
-  <!-- 用餐记录 -->
-  <section class="panel" id="panel-records">
-    <div class="row between center wrap">
-      <h2>用餐记录</h2>
-      <div class="row gap">
-        <input type="date" id="record-date" class="input" />
-        <button class="btn" id="btn-record-today">回到今天</button>
-      </div>
-    </div>
-    <p class="muted">推荐被确认后会自动记在这里；忘了确认也没关系，事后可以手动补记。</p>
-    <div class="records" id="record-list"></div>
-    <div class="summary" id="record-summary"></div>
-  </section>
-
   <!-- 收藏 -->
   <section class="panel" id="panel-favorites">
     <h2>我的收藏</h2>
@@ -166,11 +171,17 @@
         </div>
       </form>
       <div class="form-card">
+        <h3>推荐模式</h3>
+        <div class="radio-group" id="mode-group"></div>
+        <p class="muted" id="mode-hint">
+          「单道菜」= 只推荐当前这一餐的套餐；「一天方案」= 按当前时间和用餐记录算出今天还剩几餐，
+          一次给出 A/B/C 三套整日方案，选定后进入「今日」。
+        </p>
         <h3>根据你的资料算出来的目标</h3>
         <div id="metrics-box"></div>
         <h3>推荐刷新时间点</h3>
         <div id="slot-settings"></div>
-        <p class="muted">时间点用于判断"现在是哪一餐"，到达新时点时首页会自动刷新推荐（无需手动点）。</p>
+        <p class="muted">时间点用于判断"现在是哪一餐"，到达新时点时推荐会自动刷新（无需手动点）。</p>
         <button class="btn" id="btn-save-slots">保存时间点</button>
         <span class="muted" id="slot-msg"></span>
       </div>

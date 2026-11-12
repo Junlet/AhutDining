@@ -1,4 +1,4 @@
-// 前端数据契约校验：确认 API 返回的字段与 app.js 读取的字段一致
+﻿// 前端数据契约校验：确认 API 返回的字段与 app.js 读取的字段一致
 // 用法：node tests/contract_test.js [port]
 const port = process.argv[2] || 8848;
 const BASE = `http://127.0.0.1:${port}`;
@@ -134,6 +134,25 @@ async function test(name, fn) {
       'totals.kcal', 'totals.price', 'macro_pct.protein', 'advice', 'scores.total'].forEach((p) => need(meal, p));
     if (!Array.isArray(meal.items)) throw new Error('meal.items 不是数组');
     await post('/api/day-plan/reset');
+  });
+
+  await test('推荐模式设置', async () => {
+    const put = async (body) => {
+      const res = await fetch(BASE + '/api/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error('PUT /api/settings -> ' + json.error);
+      return json.data;
+    };
+    const boot = await get('/api/bootstrap');
+    const before = boot.settings['recommend.mode'];
+    if (!before) throw new Error('settings 里没有 recommend.mode');
+    const other = before === 'day' ? 'single' : 'day';
+    const changed = await put({ 'recommend.mode': other });
+    if (changed.settings['recommend.mode'] !== other) throw new Error('推荐模式没有被保存');
+    await put({ 'recommend.mode': before });
   });
 
   await test('统计字段', async () => {

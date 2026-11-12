@@ -1,4 +1,4 @@
-"""数据库层：SQLite 连接、建表、通用查询helper。
+﻿"""数据库层：SQLite 连接、建表、通用查询helper。
 
 设计要点
 --------
@@ -174,6 +174,8 @@ DEFAULT_SETTINGS = {
     "plan.auto_rotate_minutes": "0",
     # 推荐数量
     "plan.count": "6",
+    # 推荐模式：single=只推荐当前这一餐；day=整日 A/B/C 方案
+    "recommend.mode": "day",
     "ui.theme": "light",
 }
 
