@@ -824,6 +824,11 @@ function dayMealCard(meal, plan) {
     swapBtn.addEventListener('click', () => refreshOnlyMeal(meal.meal_index));
     actions.appendChild(swapBtn);
 
+    const pickBtn = el('<button class="btn">手动选择</button>');
+    pickBtn.title = '自己勾选菜品替换这一餐';
+    pickBtn.addEventListener('click', () => openMealPicker(meal, plan));
+    actions.appendChild(pickBtn);
+
     if (meal.source === 'manual') {
       const fillBtn = el('<button class="btn">自动补齐</button>');
       fillBtn.addEventListener('click', () => completeDayMeal(meal.meal_index));
@@ -833,6 +838,10 @@ function dayMealCard(meal, plan) {
     const okBtn = el('<button class="btn primary grow">确认这餐</button>');
     okBtn.addEventListener('click', () => confirmDayMeal(meal, plan));
     actions.appendChild(okBtn);
+  } else if (meal.status === 'planned') {
+    const pickBtn = el('<button class="btn primary grow">手动选择</button>');
+    pickBtn.addEventListener('click', () => openMealPicker(meal, plan));
+    actions.appendChild(pickBtn);
   } else if (meal.status !== 'recorded') {
     const markBtn = el('<button class="btn">手动补记</button>');
     markBtn.addEventListener('click', () => openRecordEditor(plan.date, {
@@ -1007,6 +1016,126 @@ async function applySetMeal(mealIndex, dishId) {
       ? `已替换${meal.meal_name}：推荐度 ${(meal.scores.total * 100).toFixed(0)} · ${meal.level}`
       : '已替换这一餐');
   } catch (err) { toast(err.message); }
+}
+
+/* ── 手动选择这一餐（多选菜品 → 替换该餐并重算推荐度） ────────── */
+async function openMealPicker(meal, plan) {
+  let data;
+  try {
+    data = await api('/api/dishes?sort=score');
+  } catch (err) {
+    toast(err.message);
+    return;
+  }
+  const all = data.items || [];
+  const selected = new Set((meal.items || []).map((i) => i.dish_id));
+  const body = document.getElementById('modal-body');
+
+  body.innerHTML = `
+    <h2>手动选择 · ${meal.meal_name}</h2>
+    <p class="muted">
+      本餐目标 ${fmt(meal.target.kcal)} kcal · 蛋白 ${fmt(meal.target.protein, 1)}g。
+      勾选你要吃的菜（可多选），保存后会替换这一餐并自动固定，推荐度会立即重算。
+    </p>
+    <input id="meal-pick-q" class="input" style="width:100%;margin-bottom:10px" placeholder="搜索菜名 / 标签 / 食堂">
+    <div class="pick-list" id="meal-pick-list"></div>
+    <div class="summary" id="meal-pick-summary" style="margin-top:12px"></div>
+    <div class="row gap" style="margin-top:12px;flex-wrap:wrap">
+      <button class="btn primary" id="meal-pick-save">保存并替换这一餐</button>
+      <button class="btn" id="meal-pick-clear">清空已选</button>
+      <span class="muted" id="meal-pick-msg"></span>
+    </div>`;
+
+  const pick = body.querySelector('#meal-pick-list');
+  const summary = body.querySelector('#meal-pick-summary');
+  const byId = new Map(all.map((i) => [i.dish_id, i]));
+
+  const updateSummary = () => {
+    let kcal = 0;
+    let protein = 0;
+    let price = 0;
+    selected.forEach((id) => {
+      const item = byId.get(id);
+      if (!item) return;
+      kcal += Number(item.kcal || 0);
+      protein += Number(item.protein || 0);
+      price += Number(item.price || 0);
+    });
+    const target = Number(meal.target.kcal || 0) || 1;
+    const ratio = Math.round((kcal / target) * 100);
+    summary.innerHTML = `
+      <div class="metric-row"><span>已选</span><span>${selected.size} 道 · ¥${fmt(price, 1)}</span></div>
+      <div class="metric-row"><span>合计热量</span><span>${fmt(kcal)} / ${fmt(target)} kcal（${ratio}%）</span></div>
+      <div class="metric-row"><span>合计蛋白</span><span>${fmt(protein, 1)} / ${fmt(meal.target.protein, 1)} g</span></div>`;
+  };
+
+  const draw = (q = '') => {
+    pick.innerHTML = '';
+    const kw = q.trim();
+    const rows = all.filter((i) => !kw
+      || i.name.includes(kw)
+      || (i.tags || []).some((t) => t.includes(kw))
+      || (i.canteen || '').includes(kw));
+    if (!rows.length) {
+      pick.innerHTML = '<div class="placeholder-text">没有匹配的菜品</div>';
+      return;
+    }
+    rows.slice(0, 150).forEach((item) => {
+      const row = el(`<label class="pick-item">
+        <input type="checkbox" ${selected.has(item.dish_id) ? 'checked' : ''}>
+        <span class="grow">${item.name}
+          <span class="dish-meta"> · ${item.canteen} · ${item.window} · ¥${fmt(item.price, 1)}
+            · ${fmt(item.kcal)} kcal · 蛋白 ${fmt(item.protein, 1)}g</span></span>
+        <span class="badge">${(item.scores.total * 100).toFixed(0)} 分</span>
+      </label>`);
+      const cb = row.querySelector('input');
+      cb.addEventListener('change', () => {
+        if (cb.checked) selected.add(item.dish_id);
+        else selected.delete(item.dish_id);
+        updateSummary();
+      });
+      pick.appendChild(row);
+    });
+  };
+
+  draw();
+  updateSummary();
+  body.querySelector('#meal-pick-q').addEventListener('input', (e) => draw(e.target.value));
+  body.querySelector('#meal-pick-clear').addEventListener('click', () => {
+    selected.clear();
+    draw(body.querySelector('#meal-pick-q').value || '');
+    updateSummary();
+  });
+
+  body.querySelector('#meal-pick-save').addEventListener('click', async () => {
+    const dishIds = [...selected];
+    if (!dishIds.length) {
+      toast('至少选一道菜');
+      return;
+    }
+    const saveBtn = body.querySelector('#meal-pick-save');
+    saveBtn.disabled = true;
+    try {
+      const res = await api('/api/day-plan/set-meal', {
+        method: 'POST',
+        body: JSON.stringify({ meal_index: meal.meal_index, dish_ids: dishIds }),
+      });
+      state.day = res;
+      closeModal();
+      renderHomeDay(res);
+      renderDayTab(res);
+      const updated = res.updated_meal;
+      toast(updated
+        ? `已替换${updated.meal_name}：推荐度 ${(updated.scores.total * 100).toFixed(0)} · ${updated.level}`
+        : '已替换这一餐');
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  document.getElementById('modal').classList.add('open');
 }
 
 /* ── 用餐记录（与今日计划合并显示） ───────────────────────────── */

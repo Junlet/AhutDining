@@ -342,6 +342,34 @@ def test_day_plan_set_meal() -> None:
     assert [i["dish_id"] for i in block3["items"]] == kept, "自选的餐在刷新后应保持不变"
 
 
+def test_day_plan_manual_pick() -> None:
+    """手动选择一餐：多选菜品替换该餐，推荐度重算，且刷新后保持不变。"""
+    state = _ensure_chosen()
+    planned = [m for m in state["plan"]["meals"] if m["status"] == "planned"]
+    assert planned, "没有可手动选择的餐次"
+    target = planned[0]
+    dishes = call("GET", "/api/dishes?sort=score")["items"]
+    assert len(dishes) >= 3
+    picked = [dishes[0]["dish_id"], dishes[1]["dish_id"], dishes[2]["dish_id"]]
+
+    data = call("POST", "/api/day-plan/set-meal",
+                {"meal_index": target["meal_index"], "dish_ids": picked})
+    block = data["updated_meal"]
+    got = [i["dish_id"] for i in block["items"]]
+    assert got == picked, f"多选后的菜品不符：{got} != {picked}"
+    assert block["source"] == "manual"
+    assert block["pinned"] is True
+    assert 0 <= block["scores"]["total"] <= 1
+    assert block["level"] in ("强烈推荐", "推荐", "一般", "不推荐")
+    assert abs(block["totals"]["kcal"]
+               - sum(d["kcal"] for d in dishes[:3])) < 1.0
+
+    refreshed = call("POST", "/api/day-plan/refresh", {"include_passed": True})
+    block2 = next(m for m in refreshed["plan"]["meals"]
+                  if m["meal_index"] == target["meal_index"])
+    assert [i["dish_id"] for i in block2["items"]] == picked, "手动选择后刷新应保持"
+
+
 def test_day_plan_confirm_effect() -> None:
     state = _ensure_chosen()
     planned = [m for m in state["plan"]["meals"] if m["status"] == "planned" and m["items"]]
@@ -390,6 +418,7 @@ for name, fn in [
     ("今日计划·固定与刷新", test_day_plan_pin_and_refresh),
     ("今日计划·单餐刷新", test_day_plan_only_meal),
     ("今日计划·自选菜替换并补齐", test_day_plan_set_meal),
+    ("今日计划·手动多选一餐", test_day_plan_manual_pick),
     ("今日计划·确认联动", test_day_plan_confirm_effect),
     ("今日计划·重置", test_day_plan_reset),
 ]:

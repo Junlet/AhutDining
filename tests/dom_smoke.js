@@ -251,6 +251,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     if (fatal) throw new Error(fatal);
   });
 
+  run('关键交互函数都已定义（含手动选择）', () => {
+    const required = ['switchTab', 'loadHome', 'loadDayPlan', 'loadRecords',
+      'renderHomeDay', 'renderDayTab', 'dayMealCard', 'openMealPicker',
+      'openRecordEditor', 'pickMealForDish', 'applySetMeal', 'confirmDayMeal',
+      'refreshDayPlan', 'reselectDayPlan', 'chooseDayOption', 'renderModeSettings'];
+    const missing = required.filter((name) => typeof sandbox[name] !== 'function');
+    if (missing.length) throw new Error(`未定义：${missing.join(', ')}`);
+  });
+
   run('设置页有推荐模式选项', () => {
     const box = byId['mode-group'];
     if (!box) throw new Error('找不到 #mode-group');
