@@ -82,16 +82,25 @@ AhutDining/
 
 ## 数据说明（重要）
 
-工作区里的 **PocketAHUT 只有文档、没有菜品数据**（数据在其闭源 App 后端），因此本项目的：
-* 食堂/窗口结构参考其 `docs/features/canteen.md`（本部+东区、窗口维度、比价、窗口评分）；
-* **菜品数值为示例估算**（61 道常见菜），用于跑通整条链路。
+菜品库已导入**真实食堂数据**：来自 PocketAHUT 的「食堂菜品价格」Excel
+（2 个校区 / 13 个食堂楼层 / 164 个窗口 / 2,603 道菜，含真实价格与分类）。
 
-替换成真实菜单只需一条命令：
+Excel 里**没有营养成分**，因此每份的蛋白质 / 脂肪 / 碳水由 `tools/import_from_xlsx.py`
+按「分类基准 + 菜名关键词（食材 / 做法 / 份量）」估算，热量按 4 kcal/g、9 kcal/g、4 kcal/g 换算；
+每道菜备注里都标注了「营养值按分类与菜名估算」。价格、分类、窗口为原始数据，未做改动。
+
+重新导入 / 换成更新版菜单：
 
 ```bash
-python tools/import_dishes.py --export data/dishes.csv      # 导出模板
-python tools/import_dishes.py --file 真实菜单.csv --replace   # 导入真实数据
+# 原始 Excel 放 data/source/（已 gitignore）
+python tools/import_from_xlsx.py "data/source/食堂菜品价格.xlsx" --apply   # 解析 + 估算 + 整体替换
+python tools/import_dishes.py --export data/dishes_real.csv               # 导出成 CSV 手工微调
+python tools/import_dishes.py --file data/dishes_real.csv --replace       # 用改好的 CSV 覆盖
 ```
+
+估算规则写在 `tools/import_from_xlsx.py` 顶部（`CATEGORY_BASE` / 食材与做法关键词表），
+拿到食堂官方营养数据后，直接改 `data/dishes_real.csv` 的
+`protein/fat/carbs/kcal` 列再导入即可，推荐算法不用改。
 
 详见 `docs/数据格式.md`。
 

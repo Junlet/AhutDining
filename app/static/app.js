@@ -166,7 +166,7 @@ function renderTodaybar() {
     <span>蛋白质 <strong>${fmt(consumed.protein, 1)}</strong> / ${fmt(daily.protein, 1)} g</span>
     <span>脂肪 <strong>${fmt(consumed.fat, 1)}</strong> / ${fmt(daily.fat, 1)} g</span>
     <span>碳水 <strong>${fmt(consumed.carbs, 1)}</strong> / ${fmt(daily.carbs, 1)} g</span>
-    <span class="muted">数据为示例菜品库（${state.boot.datasets.dishes} 道），可用 tools/import_dishes.py 导入真实数据</span>`;
+    <span class="muted">菜品库 ${state.boot.datasets.dishes} 道（数据来自 PocketAHUT 食堂价格，营养为按分类/菜名估算）</span>`;
 }
 
 function renderSlotSelect() {
@@ -396,9 +396,11 @@ async function runSearch() {
   const canteen = document.getElementById('search-canteen').value;
   const category = document.getElementById('search-category').value;
   const sort = document.getElementById('search-sort').value;
-  const params = new URLSearchParams({ q, canteen, category, sort });
+  const params = new URLSearchParams({ q, canteen, category, sort, limit: '300' });
   const data = await api(`/api/dishes?${params}`);
-  document.getElementById('search-hint').textContent = `找到 ${data.total} 道菜`;
+  document.getElementById('search-hint').textContent = data.truncated
+    ? `共 ${data.total} 道菜，先显示前 ${data.items.length} 道（可加关键词缩小范围）`
+    : `找到 ${data.total} 道菜`;
   const list = document.getElementById('search-list');
   list.innerHTML = '';
   data.items.forEach((item) => list.appendChild(dishCard(item)));
@@ -1056,12 +1058,13 @@ async function applySetMeal(mealIndex, dishId) {
 async function openMealPicker(meal, plan) {
   let data;
   try {
-    data = await api('/api/dishes?sort=score');
+    data = await api('/api/dishes?sort=score&limit=200');
   } catch (err) {
     toast(err.message);
     return;
   }
   const all = data.items || [];
+  const totalAll = data.total || all.length;
   const selected = new Set((meal.items || []).map((i) => i.dish_id));
   const body = document.getElementById('modal-body');
 
@@ -1070,6 +1073,7 @@ async function openMealPicker(meal, plan) {
     <p class="muted">
       本餐目标 ${fmt(meal.target.kcal)} kcal · 蛋白 ${fmt(meal.target.protein, 1)}g。
       勾选你要吃的菜（可多选），保存后会替换这一餐并自动固定，推荐度会立即重算。
+      ${totalAll > all.length ? `（菜品共 ${totalAll} 道，这里显示最匹配的 ${all.length} 道，可用搜索缩小范围）` : ''}
     </p>
     <input id="meal-pick-q" class="input" style="width:100%;margin-bottom:10px" placeholder="搜索菜名 / 标签 / 食堂">
     <div class="pick-list" id="meal-pick-list"></div>
@@ -1310,7 +1314,7 @@ function recordCard(date, record) {
 }
 
 async function openRecordEditor(date, record) {
-  const data = await api('/api/dishes?sort=score');
+  const data = await api('/api/dishes?sort=score&limit=200');
   const selected = new Set((record.items || []).map((i) => i.dish_id));
   const body = document.getElementById('modal-body');
   body.innerHTML = `

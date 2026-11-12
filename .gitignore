@@ -1,4 +1,4 @@
-# 运行期数据与缓存（不纳入版本库）
+﻿# 运行期数据与缓存（不纳入版本库）
 data/*.db
 data/*.db-journal
 data/*.db-wal
@@ -27,3 +27,10 @@ Thumbs.db
 backups/
 restored/
 _msg*.txt
+
+# 原始数据文件（体积/版权考虑不入库）
+data/source/
+
+
+# 原始 Excel（放在 data/source/ 下，不入库）
+*.xlsx

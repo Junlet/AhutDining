@@ -244,7 +244,24 @@ def handle_dishes(query: dict):
         window=(query.get("window") or [""])[0],
         sort=(query.get("sort") or ["score"])[0],
     )
-    return ok({"items": [recommender._item_view(d) for d in dishes], "total": len(dishes)})
+    total = len(dishes)
+    try:
+        offset = max(0, int((query.get("offset") or ["0"])[0] or 0))
+    except ValueError:
+        offset = 0
+    try:
+        limit = int((query.get("limit") or ["120"])[0] or 120)
+    except ValueError:
+        limit = 120
+    limit = max(1, min(limit, 600))
+    page = dishes[offset:offset + limit]
+    return ok({
+        "items": [recommender._item_view(d) for d in page],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "truncated": offset + len(page) < total,
+    })
 
 
 def handle_dish_detail(dish_id: int):

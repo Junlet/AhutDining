@@ -208,14 +208,12 @@ def _bundle(items: list[dict]) -> dict:
 
 
 def _variety_score(items: list[dict]) -> float:
-    """一份套餐里有主食、有荤、有素、再加汤，得分更高。"""
-    cats = [i["category"] for i in items]
-    has_staple = any(c in ("主食", "套餐", "早餐", "自助") for c in cats)
-    has_meat = any(c in ("荤菜", "小吃") for c in cats)
-    has_veg = any(c in ("素菜", "汤") for c in cats) or any(i["is_vegetable"] for i in items)
-    score = 0.35 * has_staple + 0.35 * has_meat + 0.30 * has_veg
-    # 全是主食（比如两份米饭）扣分
-    if cats.count("主食") > 1:
+    """一份套餐里有主食、有荤、有素、再加汤，得分更高（按标记判断，兼容任意分类）。"""
+    staples = [i for i in items if _is_staple(i)]
+    meats = [i for i in items if _is_meat(i)]
+    vegs = [i for i in items if _is_veg(i) or _is_soup(i)]
+    score = 0.35 * bool(staples) + 0.35 * bool(meats) + 0.30 * bool(vegs)
+    if len(staples) > 1:
         score -= 0.2
     return max(0.0, min(1.0, score))
 
@@ -281,7 +279,67 @@ def _item_view(dish: dict) -> dict:
     }
 
 
+SOUP_CATEGORIES = {"汤", "汤类"}
+DRINK_CATEGORIES = {"饮品", "水果"}
+SNACK_CATEGORIES = {"小吃", "饼类", "水果", "饮品", "零食"}
+
+
+def _is_staple(dish: dict) -> bool:
+    return bool(dish.get("is_staple"))
+
+
+def _is_soup(dish: dict) -> bool:
+    return dish.get("category") in SOUP_CATEGORIES or "汤" in dish.get("name", "")
+
+
+def _is_veg(dish: dict) -> bool:
+    return (bool(dish.get("is_vegetable")) and not _is_staple(dish)
+            and not _is_soup(dish))
+
+
+SWEET_WORDS = ("糍粑", "麻团", "蛋糕", "面包", "糕", "薯", "汉堡", "热狗",
+               "冰淇淋", "奶茶", "甜", "糖", "米花")
+DRINK_WORDS = ("豆浆", "牛奶", "酸奶", "奶茶", "可乐", "雪碧", "果汁", "咖啡",
+               "柠檬水", "饮料", "矿泉水", "茶饮", "奶昔")
+
+
+def _is_snack(dish: dict) -> bool:
+    """小吃/甜点/饮料：算加餐用，不能当"荤菜"或"素菜"。"""
+    category = dish.get("category") or ""
+    name = dish.get("name") or ""
+    return (category in SNACK_CATEGORIES
+            or any(w in name for w in SWEET_WORDS)
+            or any(w in name for w in DRINK_WORDS))
+
+
+def _is_meat(dish: dict) -> bool:
+    return (not _is_staple(dish)) and (not _is_veg(dish)) and (not _is_soup(dish)) \
+        and (not _is_snack(dish))
+
+
+def _role_pool(dishes: list[dict], role: str) -> list[dict]:
+    """按角色取候选：不再依赖具体分类名，真实数据（套餐饭/配菜/小吃…）也能用。"""
+    if role == "staple":
+        pool = [d for d in dishes if _is_staple(d)]
+    elif role == "meat":
+        pool = [d for d in dishes if _is_meat(d)]
+    elif role == "veg":
+        pool = [d for d in dishes if _is_veg(d)]
+    elif role == "soup":
+        pool = [d for d in dishes if _is_soup(d)]
+    elif role == "drink":
+        pool = [d for d in dishes if d.get("category") in DRINK_CATEGORIES
+                or _is_soup(d) or d.get("category") == "粥类"]
+    elif role == "snack":
+        pool = [d for d in dishes if d.get("category") in SNACK_CATEGORIES or _is_soup(d)]
+    else:
+        pool = []
+    pool.sort(key=lambda d: d["scores"]["total"], reverse=True)
+    return pool
+
+
 def _top(items: list[dict], categories: Iterable[str], k: int = ROLE_TOP_K) -> list[dict]:
+    """兼容旧调用：按分类名取前 K（分类名精确匹配）。"""
     cats = set(categories)
     pool = [d for d in items if d["category"] in cats]
     pool.sort(key=lambda d: d["scores"]["total"], reverse=True)
@@ -339,23 +397,23 @@ def candidate_plans(slot: str, target: dict, dishes: list[dict]) -> list[dict]:
 
     for canteen_id, canteen_dishes in by_canteen.items():
         if slot == "breakfast":
-            staples = _top(canteen_dishes, ("早餐", "主食"), k=5)
-            drinks = _top(canteen_dishes, ("饮品", "水果", "汤"), k=3)
+            staples = _role_pool(canteen_dishes, "staple")[:5]
+            drinks = _role_pool(canteen_dishes, "drink")[:3]
             if not staples:
                 continue
             raw_combos = [[s] for s in staples]
             raw_combos += [[s, d] for s in staples for d in drinks]
         elif slot == "snack":
-            pool = _top(canteen_dishes, ("水果", "饮品", "小吃"), k=4)
+            pool = _role_pool(canteen_dishes, "snack")[:4]
             if not pool:
                 continue
             raw_combos = [[p] for p in pool] + [[a, b] for a in pool[:2] for b in pool[1:3]
                                                 if a["id"] != b["id"]]
         else:
-            staples = _top(canteen_dishes, ("主食", "套餐"), k=4)
-            meats = _top(canteen_dishes, ("荤菜", "小吃"), k=4)
-            greens = _top(canteen_dishes, ("素菜", "汤"), k=4)
-            soups = _top(canteen_dishes, ("汤",), k=3)
+            staples = _role_pool(canteen_dishes, "staple")[:4]
+            meats = _role_pool(canteen_dishes, "meat")[:4]
+            greens = (_role_pool(canteen_dishes, "veg") + _role_pool(canteen_dishes, "soup"))[:4]
+            soups = _role_pool(canteen_dishes, "soup")[:3]
             if not (staples and meats and greens):
                 continue
             raw_combos = []
@@ -382,17 +440,18 @@ def candidate_plans(slot: str, target: dict, dishes: list[dict]) -> list[dict]:
             big_meal = float(target.get("kcal") or 0) >= 1000
             if slot in ("lunch", "dinner"):
                 # 补菜只补素菜或汤；只有"一餐扛半天"的大目标才允许再补一份主食
-                allowed = ("素菜", "汤") + (("主食",) if big_meal else ())
-                extras = [d for d in extras if d["category"] in allowed]
+                extras = [d for d in extras if _is_veg(d) or _is_soup(d)]
                 if big_meal:
                     # 最多再补一份主食，避免"三碗米饭"这种不合理的组合
-                    staples_extra = [d for d in extras if d["category"] == "主食"][:1]
-                    extras = staples_extra + [d for d in extras if d["category"] != "主食"]
+                    staples_extra = [d for d in extras if _is_staple(d)][:1]
+                    extras = staples_extra + [d for d in extras if not _is_staple(d)]
             elif slot == "snack":
-                extras = [d for d in extras if d["category"] in ("水果", "饮品", "小吃")]
+                extras = [d for d in extras
+                          if d.get("category") in SNACK_CATEGORIES or _is_soup(d)]
             else:  # 早餐：可以配饮品/水果/小吃/小份主食，但不再叠一份大主食
                 extras = [d for d in extras
-                          if d["category"] in ("饮品", "水果", "小吃", "早餐", "汤")]
+                          if d.get("category") in (SNACK_CATEGORIES | {"早餐", "粥类"})
+                          or _is_soup(d)]
             combo = _extend(combo, extras, target)
             scored = score_bundle(combo, target)
             first = combo[0]
