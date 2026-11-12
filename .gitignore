@@ -26,3 +26,4 @@ Thumbs.db
 # 项目快照备份
 backups/
 restored/
+_msg*.txt
