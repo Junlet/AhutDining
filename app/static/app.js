@@ -90,6 +90,7 @@ async function init() {
   document.getElementById('btn-day-refresh').addEventListener('click', refreshDayPlan);
   document.getElementById('btn-day-reselect').addEventListener('click', reselectDayPlan);
   document.getElementById('btn-day-commit').addEventListener('click', commitManualPlan);
+  document.getElementById('btn-day-fill-rest').addEventListener('click', fillRemainingMeals);
   document.getElementById('day-include-passed').addEventListener('change', loadDayPlan);
   document.getElementById('btn-search').addEventListener('click', runSearch);
   document.getElementById('search-q').addEventListener('keydown', (e) => {
@@ -555,7 +556,7 @@ async function loadHome() {
 }
 
 /* ── 今日计划（A/B/C 方案 → 选定 → 单餐替换/补记） ─────────────── */
-const DAY_STATUS_TEXT = { planned: '待安排', recorded: '已记录', missed: '已错过' };
+const DAY_STATUS_TEXT = { planned: '待安排', recorded: '已记录', missed: '已错过', empty: '未选择' };
 
 function levelClass(level) {
   if (level === '强烈推荐' || level === '推荐') return 'level-badge level-good';
@@ -655,7 +656,10 @@ function renderDayTab(data) {
 
   const hasPlan = data.stage === 'chosen' || data.stage === 'manual';
   const commitBtn = document.getElementById('btn-day-commit');
+  const fillRest = document.getElementById('btn-day-fill-rest');
+  const emptyCount = (data.plan && data.plan.summary ? data.plan.summary.meals_empty : 0) || 0;
   if (commitBtn) commitBtn.classList.toggle('hidden', !(isToday && data.stage === 'manual'));
+  if (fillRest) fillRest.classList.toggle('hidden', !(isToday && hasPlan && emptyCount > 0));
   reselect.classList.toggle('hidden', !(isToday && hasPlan));
   refreshBtn.classList.toggle('hidden', !(isToday && hasPlan));
 
@@ -677,8 +681,9 @@ function renderDayTab(data) {
   }
 
   const plan = data.plan;
-  const manualNote = data.stage === 'manual'
-    ? '当前是手动挑选的计划（手选会直接替换该餐内容），满意后点右上角「设为今日计划」。' : '';
+  const manualNote = (data.stage === 'manual'
+    ? '当前是手动挑选的计划（手选只替换该餐），满意后点右上角「设为今日计划」。' : '')
+    + (emptyCount > 0 ? `还有 ${emptyCount} 餐没选，可以逐餐手动选择或点「让系统补齐剩余」。` : '');
   hint.textContent = `方案 ${plan.label || ''}：共 ${plan.summary.meals_total} 餐，已记录 ${plan.summary.meals_recorded} 餐、`
     + `待安排 ${plan.summary.meals_remaining} 餐`
     + (plan.summary.meals_missed ? `、已错过 ${plan.summary.meals_missed} 餐` : '')
@@ -831,6 +836,8 @@ function dayMealCard(meal, plan) {
     });
   } else if (meal.status === 'missed') {
     list.innerHTML = `<div class="dish-meta" style="padding:6px 0">这一餐已经过了时段，没有记录。点下方「手动选择」补上你实际吃的（算补记），或勾选上方「包含已过时段」重新安排。</div>`;
+  } else if (meal.status === 'empty') {
+    list.innerHTML = `<div class="dish-meta" style="padding:6px 0">这一餐还没选：点「手动选择」自己搭配，或点「系统推荐」让系统配一餐。</div>`;
   } else if (meal.status === 'planned') {
     list.innerHTML = `<div class="dish-meta" style="padding:6px 0">这个时段暂时没有凑出合适组合。</div>`;
   }
@@ -861,6 +868,13 @@ function dayMealCard(meal, plan) {
     const pickBtn = el('<button class="btn primary grow">手动选择</button>');
     pickBtn.addEventListener('click', () => openMealPicker(meal, plan));
     actions.appendChild(pickBtn);
+  } else if (meal.status === 'empty') {
+    const pickBtn = el('<button class="btn primary grow">手动选择</button>');
+    pickBtn.addEventListener('click', () => openMealPicker(meal, plan));
+    actions.appendChild(pickBtn);
+    const autoBtn = el('<button class="btn">系统推荐</button>');
+    autoBtn.addEventListener('click', () => fillDayMeal(meal.meal_index));
+    actions.appendChild(autoBtn);
   } else if (meal.status !== 'recorded') {
     const markBtn = el('<button class="btn primary grow">手动选择</button>');
     markBtn.addEventListener('click', () => openMealPicker(meal, plan));
@@ -1149,10 +1163,13 @@ async function openMealPicker(meal, plan) {
       renderHomeDay(state_);
       renderDayTab(state_);
       await loadRecords();
+      const emptyLeft = (res.plan && res.plan.summary ? res.plan.summary.meals_empty : 0) || 0;
       if (res.record_synced) {
-        toast(`已替换${meal.meal_name}，并同步更新了用餐记录`);
+        toast(`已替换${meal.meal_name}（已同步记录）`
+          + (emptyLeft ? `，还有 ${emptyLeft} 餐没选` : ''));
       } else if (res.stage === 'manual') {
-        toast(`已替换${meal.meal_name}，满意后点「设为今日计划」`);
+        toast(`已替换${meal.meal_name}`
+          + (emptyLeft ? `，还有 ${emptyLeft} 餐没选（可手动选或让系统推荐）` : '，可以点「设为今日计划」'));
       } else {
         toast(`已替换${meal.meal_name}`);
       }
@@ -1164,6 +1181,33 @@ async function openMealPicker(meal, plan) {
   });
 
   document.getElementById('modal').classList.add('open');
+}
+
+/* ── 让系统只补某一餐 / 补齐剩余餐次 ──────────────────────────── */
+async function fillDayMeal(mealIndex) {
+  try {
+    const data = await api('/api/day-plan/fill-meal', {
+      method: 'POST',
+      body: JSON.stringify({ meal_index: mealIndex }),
+    });
+    state.day = data;
+    renderHomeDay(data);
+    renderDayTab(data);
+    const meal = data.updated_meal;
+    toast(meal
+      ? `系统已推荐${meal.meal_name}：推荐度 ${(meal.scores.total * 100).toFixed(0)} · ${meal.level}`
+      : '已补上这一餐');
+  } catch (err) { toast(err.message); }
+}
+
+async function fillRemainingMeals() {
+  try {
+    const data = await api('/api/day-plan/fill-remaining', { method: 'POST', body: '{}' });
+    state.day = data;
+    renderHomeDay(data);
+    renderDayTab(data);
+    toast('已把剩余餐次按你的目标补齐');
+  } catch (err) { toast(err.message); }
 }
 
 /* ── 把手动挑选的餐次正式设为今日计划 ──────────────────────────── */

@@ -736,6 +736,7 @@ def summarize_plan(plan: dict) -> dict:
     plan["summary"] = {
         "meals_total": len(blocks),
         "meals_remaining": len([b for b in blocks if b["status"] == "planned"]),
+        "meals_empty": len([b for b in blocks if b["status"] == "empty"]),
         "meals_recorded": len([b for b in blocks if b["status"] == "recorded"]),
         "meals_missed": len([b for b in blocks if b["status"] == "missed"]),
         "plan_kcal": round(planned_kcal, 1),
@@ -751,11 +752,14 @@ def summarize_plan(plan: dict) -> dict:
 
 def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dict]]] = None,
                    seed: int = 0, include_passed: bool = False,
-                   force_include: Optional[set[int]] = None) -> dict:
+                   force_include: Optional[set[int]] = None,
+                   auto_fill: bool = True) -> dict:
     """生成一套整日方案。
 
     * 只安排「还没记录、且时间还没过」的餐次；已过时段且没记录的算"错过"（除非 include_passed）
     * 已被用户固定的餐次原样保留，其余餐次围绕它重新分配剩余额度
+    * auto_fill=False：只有 pins 里的餐次有内容，其余留空（status=empty），
+      用于"用户手动挑一餐"的场景——不能替用户把别的餐也自动补上
     """
     date = date or db.today()
     profile = db.query_one("SELECT * FROM profiles WHERE user_id = 1") or {}
@@ -810,11 +814,14 @@ def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dic
 
         if idx in pins and pins[idx]:
             block = _plan_meal_block(meal, target, pins[idx], True, "planned", "pinned")
-        else:
+        elif auto_fill:
             candidates = candidate_plans(meal["slot"], target, dishes)
             chosen = _pick_weighted(candidates, rng)
             block = _plan_meal_block(meal, target, chosen["items"] if chosen else [],
                                      False, "planned", "auto")
+        else:
+            block = _plan_meal_block(meal, target, [], False, "empty", "empty")
+            block["advice"] = ["这一餐还没选：可以「手动选择」自己挑，或点「系统推荐」由系统配一餐"]
 
         for key in ("kcal", "protein", "fat", "carbs", "price"):
             planned_totals[key] += float(block["totals"].get(key) or 0)
@@ -828,6 +835,7 @@ def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dic
         "daily": daily,
         "consumed": consumed,
         "meals": blocks,
+        "auto_fill": bool(auto_fill),
         "suggest_include_passed": bool(
             not remaining and any(m["status"] == "missed" for m in timeline)),
     }
@@ -945,7 +953,8 @@ def get_day_state(date: Optional[str] = None) -> dict:
             label = old_plan.get("label")
             rebuilt = build_day_plan(date, pins=pins,
                                      seed=state.get("seed", 0) + 1,
-                                     include_passed=include_passed)
+                                     include_passed=include_passed,
+                                     auto_fill=bool(state.get("auto_fill", True)))
             if label:
                 rebuilt["label"] = label
             state["plan"] = rebuilt
@@ -1049,11 +1058,88 @@ def refresh_day_plan(date: Optional[str] = None, only_meal: Optional[int] = None
         pins = _pins_from(plan)
 
     seed = int(state.get("seed") or 0) + 1
-    state["plan"] = build_day_plan(date, pins=pins, seed=seed, include_passed=include_passed)
+    state["plan"] = build_day_plan(date, pins=pins, seed=seed, include_passed=include_passed,
+                                   auto_fill=bool(state.get("auto_fill", True)))
     state["plan"]["label"] = plan.get("label")
     state["seed"] = seed
     state["include_passed"] = include_passed
     state["signature"] = _signature(date, include_passed)
+    state["now"] = _now_hhmm()
+    _save_state_row(date, state)
+    return state
+
+
+def _ensure_manual_state(date: str) -> dict:
+    """确保当天有一个计划状态；没有就先建一个"只含已选餐次"的手动计划。"""
+    state = _load_state_row(date)
+    if state and state.get("stage") in ("chosen", "manual") and state.get("plan"):
+        return state
+    include_passed = bool((state or {}).get("include_passed"))
+    plan = build_day_plan(date, pins={}, seed=0, include_passed=include_passed, auto_fill=False)
+    plan["label"] = "手动"
+    state = {
+        "stage": "manual",
+        "date": date,
+        "now": _now_hhmm(),
+        "seed": 0,
+        "include_passed": include_passed,
+        "signature": _signature(date, include_passed),
+        "options": [],
+        "auto_fill": False,
+        "plan": plan,
+    }
+    _save_state_row(date, state)
+    return state
+
+
+def fill_meal(date: Optional[str], meal_index: int, seed_shift: int = 0) -> dict:
+    """只给指定的一餐生成系统推荐（其它餐次保持不变）。"""
+    date = date or db.today()
+    state = _ensure_manual_state(date)
+    plan = state["plan"]
+    block = next((b for b in plan.get("meals", []) if b["meal_index"] == meal_index), None)
+    if block is None:
+        raise ValueError("这一餐不在今日计划里")
+    target = block.get("target") or {}
+    if not target.get("kcal"):
+        target = {"kcal": 0, "protein": 0, "fat": 0, "carbs": 0, "slot": block["slot"],
+                  "meal_name": block["meal_name"], "meal_index": meal_index, "share": 0.3}
+    dishes = load_dishes()
+    candidates = candidate_plans(block["slot"], target, dishes)
+    seed = int(state.get("seed") or 0) + 1 + seed_shift
+    rng = random.Random(f"{date}-fill-{meal_index}-{seed}")
+    chosen = _pick_weighted(candidates, rng)
+    if not chosen:
+        raise ValueError("这个时段暂时凑不出合适的组合")
+
+    pins = dict(_pins_from(plan))
+    pins[meal_index] = chosen["items"]
+    plan2 = build_day_plan(date, pins=pins, seed=seed,
+                           include_passed=bool(state.get("include_passed")),
+                           force_include={meal_index},
+                           auto_fill=bool(state.get("auto_fill", False)))
+    plan2["label"] = plan.get("label") or "手动"
+    state["plan"] = plan2
+    state["seed"] = seed
+    state["now"] = _now_hhmm()
+    _save_state_row(date, state)
+    return state
+
+
+def fill_remaining(date: Optional[str] = None) -> dict:
+    """把还没选的餐次一次性交给系统推荐（已有的手选内容保持不变）。"""
+    date = date or db.today()
+    state = _ensure_manual_state(date)
+    plan = state["plan"]
+    pins = dict(_pins_from(plan))
+    seed = int(state.get("seed") or 0) + 1
+    new_plan = build_day_plan(date, pins=pins, seed=seed,
+                              include_passed=bool(state.get("include_passed")),
+                              auto_fill=True)
+    new_plan["label"] = plan.get("label") or "手动"
+    state["plan"] = new_plan
+    state["auto_fill"] = True
+    state["seed"] = seed
     state["now"] = _now_hhmm()
     _save_state_row(date, state)
     return state
@@ -1151,7 +1237,7 @@ def manual_meal(date: Optional[str], meal_index: int, dish_ids: list[int]) -> di
     pins[meal_index] = items
     seed = int((state or {}).get("seed") or 0) + 1
     plan = build_day_plan(date, pins=pins, seed=seed, include_passed=include_passed,
-                          force_include={meal_index})
+                          force_include={meal_index}, auto_fill=False)
     if label:
         plan["label"] = label
     new_state = {
@@ -1162,6 +1248,7 @@ def manual_meal(date: Optional[str], meal_index: int, dish_ids: list[int]) -> di
         "include_passed": include_passed,
         "signature": _signature(date, include_passed),
         "options": [],
+        "auto_fill": False,
         "plan": plan,
     }
     _save_state_row(date, new_state)

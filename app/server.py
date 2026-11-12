@@ -472,6 +472,30 @@ def handle_day_plan_choose(body: dict):
     return ok(_day_payload(state))
 
 
+def handle_day_plan_fill_meal(body: dict):
+    date = body.get("date") or db.today()
+    meal_index = int(body.get("meal_index") or 0)
+    if not meal_index:
+        return fail("缺少 meal_index")
+    try:
+        state = recommender.fill_meal(date, meal_index)
+    except ValueError as exc:
+        return fail(str(exc))
+    payload = _day_payload(state)
+    payload["updated_meal"] = next(
+        (b for b in (state.get("plan") or {}).get("meals", [])
+         if b["meal_index"] == meal_index), None)
+    return ok(payload)
+
+
+def handle_day_plan_fill_remaining(body: dict):
+    date = body.get("date") or db.today()
+    try:
+        state = recommender.fill_remaining(date)
+    except ValueError as exc:
+        return fail(str(exc))
+    return ok(_day_payload(state))
+
 def handle_day_plan_manual_meal(body: dict):
     date = body.get("date") or db.today()
     meal_index = int(body.get("meal_index") or 0)
@@ -587,6 +611,8 @@ ROUTES: list[Route] = [
     ("POST", r"^/api/day-plan/refresh$", lambda req, m, q, b: handle_day_plan_refresh(b)),
     ("POST", r"^/api/day-plan/choose$", lambda req, m, q, b: handle_day_plan_choose(b)),
     ("POST", r"^/api/day-plan/manual-meal$", lambda req, m, q, b: handle_day_plan_manual_meal(b)),
+    ("POST", r"^/api/day-plan/fill-meal$", lambda req, m, q, b: handle_day_plan_fill_meal(b)),
+    ("POST", r"^/api/day-plan/fill-remaining$", lambda req, m, q, b: handle_day_plan_fill_remaining(b)),
     ("POST", r"^/api/day-plan/commit$", lambda req, m, q, b: handle_day_plan_commit(b)),
     ("POST", r"^/api/day-plan/pin$", lambda req, m, q, b: handle_day_plan_pin(b)),
     ("POST", r"^/api/day-plan/set-meal$", lambda req, m, q, b: handle_day_plan_set_meal(b)),
