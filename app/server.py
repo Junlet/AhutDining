@@ -759,10 +759,26 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
 
+PROJECT_DIR = os.path.dirname(APP_DIR)
+REAL_DISHES_CSV = os.path.join(PROJECT_DIR, "data", "dishes_real.csv")
+
+
 def bootstrap_data() -> dict:
+    """启动时准备数据：库里有菜就跳过；空的先导入真实 CSV，再不行才用示例数据。"""
     db.init_db()
-    result = seed_data.seed(force=False)
-    return result
+    existing = db.query_one("SELECT COUNT(*) AS c FROM dishes")["c"]
+    if existing:
+        return {"skipped": True, "dishes": existing}
+
+    if os.path.isfile(REAL_DISHES_CSV):
+        try:
+            sys.path.insert(0, os.path.join(PROJECT_DIR, "tools"))
+            from import_dishes import import_csv  # 延迟导入，避免启动依赖 tools
+            stats = import_csv(REAL_DISHES_CSV, replace=True)
+            return {"source": "dishes_real.csv", **stats}
+        except Exception as exc:  # noqa: BLE001
+            print(f"[数据] 导入 dishes_real.csv 失败，回退示例数据：{exc}")
+    return seed_data.seed(force=False)
 
 
 def pick_port(preferred: int = 8848) -> int:

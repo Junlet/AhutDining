@@ -157,6 +157,37 @@ python tools/backup.py --restore 20261111-225418   # 解压到 restored/<时间�
 `media/` 里用户上传的图片（这些体积大且可重建/应自行保留）。
 `--restore` 只解压到 `restored/` 供对照，不会覆盖当前代码，确认后手动拷回即可。
 
+## 仓库地址
+
+已发布到 GitHub：**<https://github.com/Junlet/AhutDining>**（public，默认分支 `main`）
+
+```bash
+git clone https://github.com/Junlet/AhutDining.git
+cd AhutDining
+python run.py          # 或双击 start.bat
+```
+
+> 仓库里**不含**运行期数据：`data/dining.db`（数据库）、`data/source/`（原始 Excel）、
+> `media/` 里的上传图片、`backups/` 快照都在 `.gitignore` 中。
+> 首次启动会自动建库并导入 `data/dishes_real.csv` 里的 2,603 道菜？
+> ——不会：首次启动写的是 `app/seed_data.py` 里的示例数据；要恢复真实菜品库请执行
+> `python tools/import_dishes.py --file data/dishes_real.csv --replace`。
+
+## 备份与回滚
+
+每次改代码/改数据前后都可以打个快照（zip 存在 `backups/`，已 gitignore）：
+
+```bash
+python tools/backup.py --tag before-xxx     # 改之前
+python tools/backup.py --tag after-xxx      # 改完验证通过后
+python tools/backup.py --list               # 列出所有备份
+python tools/backup.py --restore 20261111-225418   # 解压到 restored/<时间戳>/ 对照
+```
+
+备份内容包含代码、文档、示例数据 CSV，**不包含** `.git`、运行期数据库 `data/dining.db`、
+`media/` 里用户上传的图片（这些体积大且可重建/应自行保留）。
+`--restore` 只解压到 `restored/` 供对照，不会覆盖当前代码，确认后手动拷回即可。
+
 ## 上传到 GitHub
 
 本地仓库已经分阶段提交好（每个模块一个 commit），推送前只需：

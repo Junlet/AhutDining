@@ -36,10 +36,12 @@ def main() -> None:
 
     seeded = server.bootstrap_data()
     if seeded.get("skipped"):
-        print(f"[数据] 已有 {seeded['dishes']} 道菜品，跳过示例数据写入")
+        print(f"[数据] 已有 {seeded['dishes']} 道菜品，直接使用现有数据库")
+    elif seeded.get("source"):
+        print(f"[数据] 已从 {seeded['source']} 导入：新增 {seeded.get('inserted', 0)} 道菜")
     else:
-        print(f"[数据] 已写入示例数据：{seeded['canteens']} 个食堂 / "
-              f"{seeded['windows']} 个窗口 / {seeded['dishes']} 道菜")
+        print(f"[数据] 已写入示例数据：{seeded.get('canteens', 0)} 个食堂 / "
+              f"{seeded.get('windows', 0)} 个窗口 / {seeded.get('dishes', 0)} 道菜")
 
     httpd = server.serve()
     host, port = httpd.server_address[:2]
