@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from datetime import datetime
 from typing import Iterable, Optional
 
@@ -288,7 +289,15 @@ def _is_staple(dish: dict) -> bool:
     return bool(dish.get("is_staple"))
 
 
+def _is_drink(dish: dict) -> bool:
+    name = dish.get("name") or ""
+    return (dish.get("category") in DRINK_CATEGORIES
+            or any(w in name for w in DRINK_WORDS))
+
+
 def _is_soup(dish: dict) -> bool:
+    if _is_drink(dish):
+        return False
     return dish.get("category") in SOUP_CATEGORIES or "汤" in dish.get("name", "")
 
 
@@ -317,6 +326,46 @@ def _is_meat(dish: dict) -> bool:
         and (not _is_snack(dish))
 
 
+SPEC_SUFFIX = re.compile(r"[（(【\[].*?[）)】\]]|(大杯|小杯|中杯|大份|小份|加量|超大份|单人份|双人份)")
+
+
+def _base_name(name: str) -> str:
+    """去掉规格后缀，用于跨餐次去重（"现磨豆浆"与"现磨豆浆大杯"视为同一道）。"""
+    return SPEC_SUFFIX.sub("", name or "").strip()
+
+
+RICE_WORDS = ("米饭", "盖饭", "拌饭", "炒饭", "套餐饭", "煲仔饭", "饭")
+
+
+def _shape_preferred(candidates: list[dict], slot: str, used_ids: set,
+                     used_bases: set) -> list[dict]:
+    """午/晚餐的形态偏好：先去掉与已选重复的，再尽量挑"有荤、有饭"的组合。"""
+    fresh = [c for c in candidates if not _collides(c["items"], used_ids, used_bases)]
+    pool = fresh or candidates
+    if slot not in ("lunch", "dinner"):
+        return pool
+
+    with_meat = [c for c in pool if any(_is_meat(i) for i in c["items"])]
+    if with_meat:
+        pool = with_meat
+    with_rice = [c for c in pool
+                 if any((i.get("category") == "套餐饭")
+                        or any(w in i.get("name", "") for w in RICE_WORDS)
+                        for i in c["items"])]
+    if with_rice:
+        pool = with_rice
+    return pool
+
+
+def _collides(items: list[dict], used_ids: set, used_bases: set) -> bool:
+    for item in items:
+        if item.get("dish_id") in used_ids:
+            return True
+        if _base_name(item.get("name", "")) in used_bases:
+            return True
+    return False
+
+
 def _role_pool(dishes: list[dict], role: str) -> list[dict]:
     """按角色取候选：不再依赖具体分类名，真实数据（套餐饭/配菜/小吃…）也能用。"""
     if role == "staple":
@@ -328,8 +377,7 @@ def _role_pool(dishes: list[dict], role: str) -> list[dict]:
     elif role == "soup":
         pool = [d for d in dishes if _is_soup(d)]
     elif role == "drink":
-        pool = [d for d in dishes if d.get("category") in DRINK_CATEGORIES
-                or _is_soup(d) or d.get("category") == "粥类"]
+        pool = [d for d in dishes if _is_drink(d) or d.get("category") == "粥类"]
     elif role == "snack":
         pool = [d for d in dishes if d.get("category") in SNACK_CATEGORIES or _is_soup(d)]
     else:
@@ -846,6 +894,8 @@ def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dic
 
     rng = random.Random(f"{date}-day-{seed}")
     blocks: list[dict] = []
+    used_ids: set[int] = set()
+    used_bases: set[str] = set()
     for meal in timeline:
         idx = meal["meal_index"]
         if meal["status"] == "recorded":
@@ -873,11 +923,18 @@ def build_day_plan(date: Optional[str] = None, pins: Optional[dict[int, list[dic
 
         if idx in pins and pins[idx]:
             block = _plan_meal_block(meal, target, pins[idx], True, "planned", "pinned")
+            for item in pins[idx]:
+                used_ids.add(item["dish_id"])
+                used_bases.add(_base_name(item["name"]))
         elif auto_fill:
             candidates = candidate_plans(meal["slot"], target, dishes)
-            chosen = _pick_weighted(candidates, rng)
-            block = _plan_meal_block(meal, target, chosen["items"] if chosen else [],
-                                     False, "planned", "auto")
+            chosen = _pick_weighted(
+                _shape_preferred(candidates, meal["slot"], used_ids, used_bases), rng)
+            items = chosen["items"] if chosen else []
+            block = _plan_meal_block(meal, target, items, False, "planned", "auto")
+            for item in items:
+                used_ids.add(item["dish_id"])
+                used_bases.add(_base_name(item["name"]))
         else:
             block = _plan_meal_block(meal, target, [], False, "empty", "empty")
             block["advice"] = ["这一餐还没选：可以「手动选择」自己挑，或点「系统推荐」由系统配一餐"]
@@ -1165,9 +1222,12 @@ def fill_meal(date: Optional[str], meal_index: int, seed_shift: int = 0) -> dict
                   "meal_name": block["meal_name"], "meal_index": meal_index, "share": 0.3}
     dishes = load_dishes()
     candidates = candidate_plans(block["slot"], target, dishes)
+    used_ids = {i["dish_id"] for b in plan.get("meals", []) for i in b.get("items", [])}
+    used_bases = {_base_name(i["name"]) for b in plan.get("meals", []) for i in b.get("items", [])}
     seed = int(state.get("seed") or 0) + 1 + seed_shift
     rng = random.Random(f"{date}-fill-{meal_index}-{seed}")
-    chosen = _pick_weighted(candidates, rng)
+    chosen = _pick_weighted(
+        _shape_preferred(candidates, block["slot"], used_ids, used_bases), rng)
     if not chosen:
         raise ValueError("这个时段暂时凑不出合适的组合")
 
